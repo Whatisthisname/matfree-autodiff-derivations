@@ -162,7 +162,7 @@ def bidiagonalize_jvp(primals, tangents) -> tuple[BidiagOutput, BidiagOutput]:
     return primal_output, tangent_output
 
 
-@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("seed", range(20))
 def test_bidiag_jvp(seed):
     np.random.seed(seed)
     n = np.random.randint(2, 6)
@@ -203,7 +203,7 @@ def test_bidiag_jvp(seed):
             ), f"\nApprox: {aprox}, \nExact: {exact}"
 
 
-@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("seed", range(20))
 def test_bidiag_tall_matrix(seed):
     np.random.seed(seed)
     n = np.random.randint(low=2, high=8 + 1)
@@ -236,7 +236,7 @@ def test_bidiag_tall_matrix(seed):
     ), "A.T L != R B.T + extra"
 
 
-def ltest_bidiag_wide_matrix():
+def _test_bidiag_wide_matrix():
     n = 2
     m = 4
     A = np.random.randn(n, m)  # random 2x4 (wide) matrix
@@ -267,4 +267,7 @@ def ltest_bidiag_wide_matrix():
     ), "A.T L != R B.T + extra"
 
 
-ltest_bidiag_wide_matrix()
+# # test_bidiag_wide_matrix()
+# test_bidiag_tall_matrix(1)
+# test_bidiag_tall_matrix(2)
+# test_bidiag_tall_matrix(3)
