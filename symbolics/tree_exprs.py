@@ -1,5 +1,6 @@
 from abc import abstractmethod
 import typing
+from enum import StrEnum  # type: ignore[attr-defined]
 from typing import Optional, Protocol, Union
 from typing_extensions import assert_never, Self
 
@@ -99,7 +100,7 @@ class MatrixExpr(Displayable, typing.Protocol):
         return _Product(other, self)
 
     def __inv__(self) -> "MatrixExpr":
-        return Invert(self)
+        return Inverse(self)
 
     def is_zero_element(self) -> bool:
         return isinstance(self, Const) and self.term.name == "0"
@@ -114,18 +115,57 @@ class MatrixExpr(Displayable, typing.Protocol):
         return self.shape().shape[1] == UnitDim
 
 
-class Differential(MatrixExpr):
-    def __init__(self, term: MatrixExpr):
-        self.term = term
+class Sparsity(StrEnum):  # type: ignore[misc]
+    Dense = "Full"
+    Diag = "Diag"
+    Upper = "Upper"
+    Lower = "Lower"
+    SUpper = "Strict Upper"
+    SLower = "Strict Lower"
+    SSUpper = "I>>"
+
+
+class Mask(MatrixExpr):  # TODO finish implementation
+    def __init__(self, expr: MatrixExpr, sparsity: Sparsity):
+        self.expr = expr
+        self.sparsity = sparsity
+        raise NotImplementedError()
 
     def shape(self) -> Shape:
-        return self.term.shape()
+        return self.expr.shape()
 
     def __repr__(self) -> str:
-        return f"Differential({self.term})"
+        return f"Mask({self.expr}, {self.sparsity})"
 
     def str_compact(self) -> str:
-        return f"d{self.term.str_compact()}"
+        if self.sparsity == Sparsity.SLower:
+            return f"◺{self.expr.str_compact()}"
+        elif self.sparsity == Sparsity.Lower:
+            return f"◣{self.expr.str_compact()}"
+        elif self.sparsity == Sparsity.SUpper:
+            return f"◹{self.expr.str_compact()}"
+        elif self.sparsity == Sparsity.Upper:
+            return f"◥{self.expr.str_compact()}"
+        elif self.sparsity == Sparsity.Diag:
+            return f"⟍{self.expr.str_compact()}"
+        elif self.sparsity == Sparsity.Dense:
+            return f"█{self.expr.str_compact()}"
+        else:
+            raise NotImplementedError(f"Mask not implemented for {self.sparsity}")
+
+
+class Differential(MatrixExpr):
+    def __init__(self, expr: MatrixExpr):
+        self.expr = expr
+
+    def shape(self) -> Shape:
+        return self.expr.shape()
+
+    def __repr__(self) -> str:
+        return f"Differential({self.expr})"
+
+    def str_compact(self) -> str:
+        return f"d{self.expr.str_compact()}"
 
 
 class Const(MatrixExpr):
@@ -150,7 +190,7 @@ class Var(MatrixExpr):
         return self.term.shape
 
     def __repr__(self) -> str:
-        return f"UnitExp({self.term})"
+        return f"Var({self.term})"
 
     def str_compact(self) -> str:
         return self.term.str_compact()
@@ -167,10 +207,13 @@ class _Transpose(MatrixExpr):
         return Shape((self.expr.shape().shape[1], self.expr.shape().shape[0]))
 
     def str_compact(self) -> str:
-        return f"{self.expr.str_compact()}ᵀ"
+        if isinstance(self.expr, (_Sum, _Product)):  # TODO perhaps fix here.
+            return f"({self.expr.str_compact()})ᵀ"
+        else:
+            return f"{self.expr.str_compact()}ᵀ"
 
 
-class Invert(MatrixExpr):
+class Inverse(MatrixExpr):
     def __init__(self, expr: MatrixExpr):
         self.expr = expr
 
@@ -222,14 +265,14 @@ class _Negate(MatrixExpr):
         return f"Negate({self.expr})"
 
     def str_compact(self) -> str:
-        return f"- {self.expr.str_compact()}"
+        return f"- ({self.expr.str_compact()})"
 
 
 class _Product(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
         assert (
             left.is_scalar() or right.is_scalar() or left.shape()[1] == right.shape()[0]
-        ), f"Product requires shared inner dimension for both sides, got LHS {left.shape()} and RHS {right.shape()}"
+        ), f"Product requires shared inner dimension for both sides, got LHS {left.shape()} and RHS {right.shape()}, with left = {left.str_compact()} and right {right.str_compact()}"
         if right.is_scalar():
             self._shape = left.shape()
         elif left.is_scalar():
@@ -269,7 +312,7 @@ class InnerProduct(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
         assert (
             left.shape() == right.shape()
-        ), "Inner product requires same shape for both sides"
+        ), f"Inner product requires same shape for both sides, but got LHS {left.shape()} and RHS {right.shape()} with left = {left.str_compact()} and right = {right.str_compact()}"
         self.left = left
         self.right = right
 
@@ -281,6 +324,13 @@ class InnerProduct(MatrixExpr):
 
     def shape(self) -> Shape:
         return Shape((UnitDim, UnitDim))
+
+    def flip(self) -> "InnerProduct":
+        """Flip the inner product."""
+        return InnerProduct(self.right, self.left)
+
+    def transpose(self) -> "InnerProduct":
+        return InnerProduct(self.left.T, self.right.T)
 
 
 class Equation:
