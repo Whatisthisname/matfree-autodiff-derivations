@@ -15,46 +15,6 @@ class BidiagOutput:
     c: float
 
 
-def bbbbidiagonalize(A, start_vector) -> BidiagOutput:
-    m = A.shape[0]
-    n = A.shape[1]
-
-    any_n_vec = np.zeros(n)
-    any_m_vec = np.zeros(m)
-    any_number = 0
-    betas = [0]
-    alphas = [any_number]
-
-    c = 1 / np.linalg.norm(start_vector)
-    r_columns = [any_n_vec, start_vector * c]
-    l_columns = [any_m_vec]
-
-    for k in range(1, max(n, m) + 1):
-        t = A @ r_columns[k] - betas[k - 1] * l_columns[k - 1]
-        alpha_k = np.linalg.norm(t)
-        alphas.append(alpha_k)
-        l_k = t / alpha_k
-        l_columns.append(l_k)
-
-        w = A.T @ l_k - alpha_k * r_columns[k]
-        beta_k = np.linalg.norm(w)
-        betas.append(beta_k)
-
-        r_kp1 = w / beta_k
-        r_columns.append(r_kp1)
-
-        if np.allclose(beta_k, 0, atol=1e-10) or np.isnan(beta_k):
-            break
-
-    L = np.array(l_columns[1:]).T
-    R = np.array(r_columns[1:-1]).T
-    B = np.diag(alphas[1:]) + np.diag(betas[1:-1], k=1)
-
-    return BidiagOutput(
-        ls=l_columns, rs=r_columns, L=L, B=B, R=R, alphas=alphas, betas=betas, c=c
-    )
-
-
 def bidiagonalize_jvp(
     primals, tangents, iterations: int
 ) -> tuple[BidiagOutput, BidiagOutput]:
