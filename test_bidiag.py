@@ -76,7 +76,7 @@ def bidiagonalize_jvp(
     for n in range(1, iterations + 1):
         t = A @ rs[n] - bs[n - 1] * ls[n - 1]
         alpha_k = np.linalg.norm(t)
-        print("alpha_k", alpha_k)
+        # print("alpha_k", alpha_k)
         if np.allclose(alpha_k, 0, atol=1e-7) or np.isnan(alpha_k):
             break
         as_.append(alpha_k)
@@ -91,10 +91,10 @@ def bidiagonalize_jvp(
         r_kp1 = w / beta_k
         rs.append(r_kp1)
 
-    print("as")
-    print(np.array(as_[1:]).round(4))
-    print("bs")
-    print(np.array(bs[1:]).round(4))
+    # print("as")
+    # print(np.array(as_[1:]).round(4))
+    # print("bs")
+    # print(np.array(bs[1:]).round(4))
 
     L = np.array(ls[1:]).T
     R = np.array(rs[1:]).T
@@ -107,10 +107,10 @@ def bidiagonalize_jvp(
     # for i in range(len(bs)):
     # B = np.diag(as_[1:]) + np.diag(bs[1:], k=1)
 
-    print("L shape:", L.shape)
-    print("B shape:", B.shape)
-    print("R shape:", R.shape)
-    print("Bs shape:", B.shape)
+    # print("L shape:", L.shape)
+    # print("B shape:", B.shape)
+    # print("R shape:", R.shape)
+    # print("Bs shape:", B.shape)
 
     primal_output = BidiagOutput(rs=rs, ls=ls, L=L, B=B, R=R, alphas=as_, betas=bs, c=c)
     # return primal_output, primal_output
@@ -119,7 +119,9 @@ def bidiagonalize_jvp(
     d_bs = [0] * len(bs)
     d_rs = [zero_n_vec.copy() * 0 for _ in range(len(rs))]
     d_rs[1] = (
-        d_start_vector - start_vector * (start_vector.T @ d_start_vector)
+        d_start_vector
+        - (start_vector * (start_vector.T @ d_start_vector))
+        / (start_vector @ start_vector)
     ) / np.linalg.norm(start_vector)
     d_ls = [zero_m_vec.copy() * 0 for _ in range(len(ls))]
 
@@ -157,19 +159,17 @@ def bidiagonalize_jvp(
         # there will not be divide by zero here because we checked above.
         d_rs[n + 1] = d_r_np1
 
-    print("d_as")
-    print(np.array(d_as[1:]).round(4))
-    print("d_bs")
-    print(np.array(d_bs[1:]).round(4))
+    # print("d_as")
+    # print(np.array(d_as[1:]).round(4))
+    # print("d_bs")
+    # print(np.array(d_bs[1:]).round(4))
 
-    d_c = (
-        -(start_vector @ d_start_vector)
-        / (start_vector @ start_vector)
-        * np.linalg.norm(start_vector)
+    d_c = -(start_vector @ d_start_vector) / (
+        start_vector @ start_vector * np.linalg.norm(start_vector)
     )
 
     dL = np.array(d_ls[1:]).T
-    dR = np.array(d_rs[1:-1]).T
+    dR = np.array(d_rs[1:]).T
 
     if len(as_[1:]) == len(bs[1:]):
         dB = np.concatenate((np.diag(d_as[1:]), np.zeros((len(as_[1:]), 1))), axis=1)
@@ -185,18 +185,18 @@ def bidiagonalize_jvp(
     return primal_output, tangent_output
 
 
-@pytest.mark.parametrize("seed", range(20))
-def _test_bidiag_jvp(seed):
+@pytest.mark.parametrize("seed", range(50))
+def test_bidiag_jvp(seed):
     np.random.seed(seed)
     n = np.random.randint(2, 6)
     m = np.random.randint(2, 6)
     A = np.random.randn(n, m)
-    print("A.shape", A.shape)
     d_A = np.random.randn(n, m)
 
     print("Rank:", np.linalg.matrix_rank(A))
 
     start_vector = 2 * np.eye(m, 1).flatten()
+    start_vector = np.random.randn(m)
     d_start_vector = np.random.randn(m)
 
     result, tangents = bidiagonalize_jvp(
@@ -212,9 +212,9 @@ def _test_bidiag_jvp(seed):
         iterations=20,
     )
 
+    print(f"-- Field: {'c'}".ljust(20), sep="", end="")
     assert np.allclose((result_wiggled.c - result.c) / h, tangents.c, atol=1e-2)
-
-    print(result.R)
+    print(" (OK)")
 
     for idx in range(1, len(result.rs)):
         for field in ["rs", "alphas", "ls", "betas"]:
@@ -235,7 +235,7 @@ def _test_bidiag_jvp(seed):
                 continue
 
 
-@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("seed", range(50))
 def test_bidiag_tall_matrix(seed):
     np.random.seed(seed)
     n = np.random.randint(low=2, high=8 + 1)
@@ -273,7 +273,7 @@ def test_bidiag_tall_matrix(seed):
     assert np.allclose(L.T @ A @ R, B, atol=1e-5), "L^TAR != B"
 
 
-@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize("seed", range(50))
 def test_bidiag_wide_matrix(seed: int):
     np.random.seed(seed)
     m = np.random.randint(low=2, high=8 + 1)
@@ -302,9 +302,3 @@ def test_bidiag_wide_matrix(seed: int):
         R @ B.T + np.outer(result.betas[r] * result.rs[r + 1], np.eye(1, r, k=r - 1)),
         atol=1e-5,
     ), "A.T L != R B.T + extra"
-
-
-# # test_bidiag_jvp(1)
-# test_bidiag_wide_matrix(1)
-# # test_bidiag_tall_matrix(1)
-# # [test_bidiag_tall_matrix(i) for i in range(120)]
