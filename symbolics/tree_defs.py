@@ -1,6 +1,6 @@
 from abc import abstractmethod
 import typing
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Union
 from typing_extensions import assert_never, Self
 
 
@@ -15,7 +15,7 @@ class Displayable(Protocol):
 
 
 class Dim:
-    def __init__(self, dim: Optional[int]):
+    def __init__(self, dim: Optional[Union[int, str]]):
         self.dim = dim
 
     def __repr__(self) -> str:
@@ -86,16 +86,16 @@ class MatrixExpr(Displayable, typing.Protocol):
     def __neg__(self) -> "MatrixExpr":
         return _Negate(self)
 
-    def __add__(self, other: Self) -> "MatrixExpr":
+    def __add__(self, other: "MatrixExpr") -> "MatrixExpr":
         return _Sum([self, other])
 
-    def __sub__(self, other: Self) -> "MatrixExpr":
+    def __sub__(self, other: "MatrixExpr") -> "MatrixExpr":
         return _Sum([self, -other])
 
-    def __mul__(self, other: Self) -> "MatrixExpr":
+    def __mul__(self, other: "MatrixExpr") -> "MatrixExpr":
         return _Product(self, other)
 
-    def __rmul__(self, other: Self) -> "MatrixExpr":
+    def __rmul__(self, other: "MatrixExpr") -> "MatrixExpr":
         return _Product(other, self)
 
     def __inv__(self) -> "MatrixExpr":
@@ -167,7 +167,7 @@ class _Transpose(MatrixExpr):
         return Shape((self.expr.shape().shape[1], self.expr.shape().shape[0]))
 
     def str_compact(self) -> str:
-        return f"{self.expr.str_compact()}^T"
+        return f"{self.expr.str_compact()}ᵀ"
 
 
 class Invert(MatrixExpr):
@@ -189,7 +189,7 @@ class _Sum(MatrixExpr):
         assert len(exprs) > 0, "Sum requires at least one term"
         assert all(
             term.shape() == exprs[0].shape() for term in exprs
-        ), "All terms in a sum must have the same shape"
+        ), f"All terms in a sum must have the same shape, got {[term.shape() for term in exprs]}"
         self.exprs = exprs
 
     def shape(self) -> Shape:
@@ -228,8 +228,14 @@ class _Negate(MatrixExpr):
 class _Product(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
         assert (
-            left.shape()[1] == UnitDim or left.shape()[1] == right.shape()[0]
+            left.is_scalar() or right.is_scalar() or left.shape()[1] == right.shape()[0]
         ), f"Product requires shared inner dimension for both sides, got LHS {left.shape()} and RHS {right.shape()}"
+        if right.is_scalar():
+            self._shape = left.shape()
+        elif left.is_scalar():
+            self._shape = right.shape()
+        else:
+            self._shape = Shape((left.shape()[0], right.shape()[1]))
         self.left = left
         self.right = right
 
@@ -237,18 +243,29 @@ class _Product(MatrixExpr):
         return f"Product({self.left}, {self.right})"
 
     def str_compact(self) -> str:
-        return f"{self.left.str_compact()} @ {self.right.str_compact()}"
+        return f"{self.left.str_compact()} · {self.right.str_compact()}"
 
     def shape(self) -> Shape:
-        return Shape((self.left.shape().shape[0], self.right.shape().shape[1]))
+        return self._shape
 
 
 class Norm(MatrixExpr):
     def __init__(self, expr: MatrixExpr):
         assert expr.is_vector(), f"Norm requires a vector, got {expr.shape()}"
 
+        self.expr = expr
 
-class InnerProduct:
+    def shape(self) -> Shape:
+        return Shape((UnitDim, UnitDim))
+
+    def __repr__(self) -> str:
+        return f"Norm({self.expr})"
+
+    def str_compact(self) -> str:
+        return f"||{self.expr.str_compact()}||"
+
+
+class InnerProduct(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
         assert (
             left.shape() == right.shape()
@@ -257,12 +274,20 @@ class InnerProduct:
         self.right = right
 
     def __repr__(self) -> str:
-        return f"<{self.left}, {self.right}>"
+        return f"InnerProduct({self.left}, {self.right})"
+
+    def str_compact(self) -> str:
+        return f"〈{self.left.str_compact()} , {self.right.str_compact()}〉"
+
+    def shape(self) -> Shape:
+        return Shape((UnitDim, UnitDim))
 
 
 class Equation:
     def __init__(self, lhs: MatrixExpr, rhs: MatrixExpr):
-        assert lhs.shape() == rhs.shape(), "Equation requires same shape for both sides"
+        assert (
+            lhs.shape() == rhs.shape()
+        ), f"Equation requires same shape for both sides, got LHS {lhs.shape()} and RHS {rhs.shape()}"
         self.lhs = lhs
         self.rhs = rhs
 

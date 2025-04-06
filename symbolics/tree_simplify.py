@@ -15,6 +15,7 @@ from tree_defs import (
     Norm,
     _Negate,
     Const,
+    InnerProduct,
 )
 
 
@@ -39,6 +40,8 @@ def simplify(expr: MatrixExpr) -> MatrixExpr:
         return _simplify_negate(expr)
     elif isinstance(expr, Norm):
         raise AssertionError("fail")
+    elif isinstance(expr, InnerProduct):
+        return _simplify_inner_product(expr)
     elif isinstance(expr, Const):
         return expr
     else:
@@ -71,6 +74,29 @@ def _simplify_differential(expr: Differential) -> MatrixExpr:
         return Const(MatrixLit(name="0", shape=inner.shape()))
     else:
         return Differential(inner)
+
+
+def _simplify_inner_product(expr: InnerProduct) -> MatrixExpr:
+    left = simplify(expr.left)
+    right = simplify(expr.right)
+
+    # distribute all left sums
+    if isinstance(left, _Sum):
+        return simplify(
+            _Sum([InnerProduct(left_term, right) for left_term in left.exprs])
+        )
+
+    # distribute right sums
+    if isinstance(right, _Sum):
+        return simplify(
+            _Sum([InnerProduct(left, right_term) for right_term in right.exprs])
+        )
+
+    # check if left and right are transposed and then untranspose both
+    if isinstance(left, _Transpose) and isinstance(right, _Transpose):
+        return simplify(InnerProduct(right.expr, left.expr))
+
+    return InnerProduct(left, right)
 
 
 def _simplify_transpose(expr: _Transpose) -> MatrixExpr:
