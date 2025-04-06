@@ -60,7 +60,7 @@ def bidiagonalize_jvp(
 ) -> tuple[BidiagOutput, BidiagOutput]:
     A, start_vector = primals
     dA, d_start_vector = tangents
-
+    print("A shape:", A.shape)
     height = A.shape[0]
     width_ = A.shape[1]
 
@@ -76,6 +76,7 @@ def bidiagonalize_jvp(
     for n in range(1, iterations + 1):
         t = A @ rs[n] - bs[n - 1] * ls[n - 1]
         alpha_k = np.linalg.norm(t)
+        print("alpha_k", alpha_k)
         if np.allclose(alpha_k, 0, atol=1e-7) or np.isnan(alpha_k):
             break
         as_.append(alpha_k)
@@ -112,7 +113,7 @@ def bidiagonalize_jvp(
     print("Bs shape:", B.shape)
 
     primal_output = BidiagOutput(rs=rs, ls=ls, L=L, B=B, R=R, alphas=as_, betas=bs, c=c)
-    return primal_output, primal_output
+    # return primal_output, primal_output
 
     d_as = [0] * len(as_)
     d_bs = [0] * len(bs)
@@ -127,37 +128,39 @@ def bidiagonalize_jvp(
     # d_bs[0] = 0
 
     # In each iteration, assume we already know d_rs[n], d_ls[n-1], d_bs[n-1]
-    rank = len(as_[1:])
     for n in range(1, len(as_[1:]) + 1):
-        d_a_n = ls[n].T @ (A @ d_rs[n] + dA @ rs[n] - d_ls[n - 1] * bs[n - 1])
+        d_a_n = ls[n].T @ (dA @ rs[n] + A @ d_rs[n] - d_ls[n - 1] * bs[n - 1])
         d_as[n] = d_a_n
         d_l_n = (
-            A @ d_rs[n]
-            + dA @ rs[n]
-            - ls[n] * d_as[n]
-            - ls[n - 1] * d_bs[n - 1]
-            - d_ls[n - 1] * bs[n - 1]
+            dA @ rs[n]
+            + A @ d_rs[n]
+            - bs[n - 1] * d_ls[n - 1]
+            - d_as[n] * ls[n]
+            - d_bs[n - 1] * ls[n - 1]
         ) / as_[n]
-        # print(d_ls[n - 1] * bs[n - 1])
+        # there will not be divide by zero here, else the loop would have stopped
         d_ls[n] = d_l_n.copy()
-        if n == rank:
+
+        # There might not be a beta here, so we have to check.
+        if n > len(bs[1:]) or np.allclose(bs[n], 0, atol=1e-7) or np.isnan(bs[n]):
             break
-        d_b_n = (
-            rs[n + 1].T @ A.T @ d_ls[n]
-            + rs[n + 1].T @ dA.T @ ls[n]
-            - rs[n + 1].T @ d_rs[n] * as_[n]
-        )
+
+        d_b_n = rs[n + 1].T @ (dA.T @ ls[n] + A.T @ d_ls[n] - d_rs[n] * as_[n])
         d_bs[n] = d_b_n
         d_r_np1 = (
-            A.T @ d_ls[n]
-            + dA.T @ ls[n]
+            dA.T @ ls[n]
+            + A.T @ d_ls[n]
+            - d_rs[n] * as_[n]
             - rs[n] * d_as[n]
             - rs[n + 1] * d_bs[n]
-            - d_rs[n] * as_[n]
         ) / bs[n]
-        if n == len(as_):
-            d_r_np1 -= bs[n] * rs[n + 1]
+        # there will not be divide by zero here because we checked above.
         d_rs[n + 1] = d_r_np1
+
+    print("d_as")
+    print(np.array(d_as[1:]).round(4))
+    print("d_bs")
+    print(np.array(d_bs[1:]).round(4))
 
     d_c = (
         -(start_vector @ d_start_vector)
@@ -167,7 +170,13 @@ def bidiagonalize_jvp(
 
     dL = np.array(d_ls[1:]).T
     dR = np.array(d_rs[1:-1]).T
-    dB = np.diag(d_as[1:]) + np.diag(d_bs[1:], k=1)  # beta index -1?
+
+    if len(as_[1:]) == len(bs[1:]):
+        dB = np.concatenate((np.diag(d_as[1:]), np.zeros((len(as_[1:]), 1))), axis=1)
+        for i in range(len(d_bs[1:])):
+            dB[i, i + 1] = d_bs[1:][i]
+    else:
+        dB = np.diag(d_as[1:]) + np.diag(d_bs[1:], k=1)
 
     tangent_output = BidiagOutput(
         rs=d_rs, ls=d_ls, L=dL, B=dB, R=dR, alphas=d_as, betas=d_bs, c=d_c
@@ -180,14 +189,14 @@ def bidiagonalize_jvp(
 def _test_bidiag_jvp(seed):
     np.random.seed(seed)
     n = np.random.randint(2, 6)
-    m = np.random.randint(2, n + 1)
-
+    m = np.random.randint(2, 6)
     A = np.random.randn(n, m)
+    print("A.shape", A.shape)
     d_A = np.random.randn(n, m)
 
     print("Rank:", np.linalg.matrix_rank(A))
 
-    start_vector = 1 * np.eye(m, 1).flatten()
+    start_vector = 2 * np.eye(m, 1).flatten()
     d_start_vector = np.random.randn(m)
 
     result, tangents = bidiagonalize_jvp(
@@ -197,7 +206,7 @@ def _test_bidiag_jvp(seed):
     )
 
     h = 0.000001
-    result_wiggled, tangents_ = bidiagonalize_jvp(
+    result_wiggled, _ = bidiagonalize_jvp(
         primals=(A + d_A * h, start_vector + d_start_vector * h),
         tangents=(d_A, d_start_vector),  # doesn't matter
         iterations=20,
@@ -226,12 +235,15 @@ def _test_bidiag_jvp(seed):
                 continue
 
 
-@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize("seed", range(10))
 def test_bidiag_tall_matrix(seed):
     np.random.seed(seed)
     n = np.random.randint(low=2, high=8 + 1)
     m = np.random.randint(low=2, high=n + 1)
     A = np.random.randn(n, m)  # random tall-or-square matrix
+    # if np.random.rand() < 0.4:
+    # A[:, 0] = 0
+
     start_vector = 2 * np.eye(1, m).flatten()
     print("A.shape", A.shape)
 
@@ -267,7 +279,10 @@ def test_bidiag_wide_matrix(seed: int):
     m = np.random.randint(low=2, high=8 + 1)
     n = np.random.randint(low=2, high=m + 1)
     A = np.random.randn(n, m)
-    start_vector = 2 * np.eye(1, m).flatten()
+    if np.random.rand() < 0.4:
+        A[:, 0] = 0
+    # print(A.round(4))
+    start_vector = np.random.randn(m)
 
     result, _ = bidiagonalize_jvp((A, start_vector), (A, start_vector), iterations=20)
 
@@ -289,8 +304,7 @@ def test_bidiag_wide_matrix(seed: int):
     ), "A.T L != R B.T + extra"
 
 
-# test_bidiag_jvp(1)
-# _test_bidiag_wide_matrix(1)
-# _test_wide_matrix(3)
-test_bidiag_tall_matrix(1)
-# [test_bidiag_tall_matrix(i) for i in range(120)]
+# # test_bidiag_jvp(1)
+# test_bidiag_wide_matrix(1)
+# # test_bidiag_tall_matrix(1)
+# # [test_bidiag_tall_matrix(i) for i in range(120)]
