@@ -2,8 +2,10 @@ import dataclasses
 from typing_extensions import assert_never
 from tree_exprs import (
     Dim,
+    Mask,
     MatrixLit,
     Shape,
+    Sps,
     Var,
     Equation,
     niceprint,
@@ -23,6 +25,7 @@ from tree_exprs import (
 @dataclasses.dataclass
 class ExpandSettings:
     expand_inner_products: bool
+    print_tree: bool = False
 
     @staticmethod
     def default() -> "ExpandSettings":
@@ -37,31 +40,186 @@ def expand_equation(
     return Equation(expand(eq.lhs, settings), expand(eq.rhs, settings))
 
 
+indentation_level = 0
+
+
 def expand(
     expr: MatrixExpr, settings: ExpandSettings = ExpandSettings.default()
 ) -> MatrixExpr:
-    if isinstance(expr, Var):
-        return expr
-    elif isinstance(expr, Differential):
-        return _expand_differential(expr, settings)
-    elif isinstance(expr, _Product):
-        return _expand_product(expr, settings)
-    elif isinstance(expr, Inverse):
-        return _expand_inverse(expr, settings)
-    elif isinstance(expr, _Transpose):
-        return _expand_transpose(expr, settings)
-    elif isinstance(expr, _Sum):
-        return _expand_sum(expr, settings)
-    elif isinstance(expr, _Negate):
-        return _expand_negate(expr, settings)
-    elif isinstance(expr, Norm):
-        raise AssertionError("fail")
-    elif isinstance(expr, InnerProduct):
-        return _expand_inner_product(expr, settings)
-    elif isinstance(expr, Const):
-        return expr
+    global indentation_level
+    if settings.print_tree:
+        print(
+            f"{indentation_level:2}"
+            + " | " * (indentation_level - 1)
+            + (" L " if indentation_level > 0 else ""),
+            end=" ",
+        )
+        (niceprint(expr),)
+    indentation_level += 1
+    try:
+        if isinstance(expr, Var):
+            return expr
+        elif isinstance(expr, Differential):
+            return _expand_differential(expr, settings)
+        elif isinstance(expr, _Product):
+            return _expand_product(expr, settings)
+        elif isinstance(expr, Inverse):
+            return _expand_inverse(expr, settings)
+        elif isinstance(expr, _Transpose):
+            return _expand_transpose(expr, settings)
+        elif isinstance(expr, _Sum):
+            return _expand_sum(expr, settings)
+        elif isinstance(expr, _Negate):
+            return _expand_negate(expr, settings)
+        elif isinstance(expr, Norm):
+            _expand_inner_product(expr, settings)
+        elif isinstance(expr, InnerProduct):
+            return _expand_inner_product(expr, settings)
+        elif isinstance(expr, Const):
+            return expr
+        elif isinstance(expr, Mask):
+            return _expand_mask(expr, settings)
+        else:
+            assert_never(expr)
+    finally:
+        indentation_level -= 1
+
+
+def _expand_norm(expr: Norm, settings: ExpandSettings) -> MatrixExpr:
+    raise NotImplementedError(
+        "Norm expansion is not implemented yet. Please use expand_inner_product instead."
+    )
+    inner = expand(expr.expr, settings)
+    if isinstance(prod := inner, _Transpose):
+        return expand(InnerProduct(prod.expr, prod.expr), settings)
+
+
+mask_product_combination = {
+    Sps.Lower: {
+        Sps.Lower: Sps.Lower,
+        Sps.SLower: Sps.SLower,
+        Sps.Diag: Sps.Lower,
+    },
+    Sps.SLower: {
+        Sps.Lower: Sps.SLower,
+        Sps.SLower: Sps.SLower,
+        Sps.Diag: Sps.SLower,
+    },
+    Sps.Upper: {
+        Sps.Upper: Sps.Upper,
+        Sps.SUpper: Sps.SUpper,
+        Sps.Diag: Sps.Upper,
+    },
+    Sps.Diag: {
+        Sps.Diag: Sps.Diag,
+        Sps.Lower: Sps.Lower,
+        Sps.SLower: Sps.SLower,
+        Sps.Upper: Sps.Upper,
+        Sps.SUpper: Sps.SUpper,
+    },
+}
+mask_double_application_list = [
+    ({Sps.Dense, Sps.Dense}, Sps.Dense),
+    ({Sps.Dense, Sps.Diag}, Sps.Diag),
+    ({Sps.Dense, Sps.Upper}, Sps.Upper),
+    ({Sps.Dense, Sps.Lower}, Sps.Lower),
+    ({Sps.Dense, Sps.SUpper}, Sps.SUpper),
+    ({Sps.Dense, Sps.SLower}, Sps.SLower),
+    ({Sps.Dense, Sps.SSUpper}, Sps.SSUpper),
+    ({Sps.Dense, Sps.Nothing}, Sps.Nothing),
+    #
+    ({Sps.Diag, Sps.Diag}, Sps.Diag),
+    ({Sps.Diag, Sps.Upper}, Sps.Diag),
+    ({Sps.Diag, Sps.Lower}, Sps.Diag),
+    ({Sps.Diag, Sps.SUpper}, Sps.Nothing),
+    ({Sps.Diag, Sps.SLower}, Sps.Nothing),
+    ({Sps.Diag, Sps.SSUpper}, Sps.Nothing),
+    ({Sps.Diag, Sps.Nothing}, Sps.Nothing),
+    ({Sps.Diag, Sps.SSLower}, Sps.Nothing),
+    #
+    ({Sps.Upper, Sps.Upper}, Sps.Upper),
+    ({Sps.Upper, Sps.Lower}, Sps.Diag),
+    ({Sps.Upper, Sps.SUpper}, Sps.SUpper),
+    ({Sps.Upper, Sps.SLower}, Sps.Nothing),
+    ({Sps.Upper, Sps.SSUpper}, Sps.SSUpper),
+    ({Sps.Upper, Sps.Nothing}, Sps.Nothing),
+    ({Sps.Upper, Sps.SSLower}, Sps.Nothing),
+    #
+    ({Sps.Lower, Sps.Lower}, Sps.Lower),
+    ({Sps.Lower, Sps.SUpper}, Sps.Nothing),
+    ({Sps.Lower, Sps.SLower}, Sps.SLower),
+    ({Sps.Lower, Sps.SSUpper}, Sps.Nothing),
+    ({Sps.Lower, Sps.Nothing}, Sps.Nothing),
+    ({Sps.Lower, Sps.SSLower}, Sps.SSLower),
+    #
+    ({Sps.SUpper, Sps.SUpper}, Sps.SUpper),
+    ({Sps.SUpper, Sps.SLower}, Sps.Nothing),
+    ({Sps.SUpper, Sps.SSUpper}, Sps.SSUpper),
+    ({Sps.SUpper, Sps.Nothing}, Sps.Nothing),
+    ({Sps.SUpper, Sps.SSLower}, Sps.Nothing),
+    #
+    ({Sps.SLower, Sps.SLower}, Sps.SLower),
+    ({Sps.SLower, Sps.SSUpper}, Sps.Nothing),
+    ({Sps.SLower, Sps.Nothing}, Sps.Nothing),
+    ({Sps.SLower, Sps.SSLower}, Sps.SSLower),
+    #
+    ({Sps.SSUpper, Sps.SSUpper}, Sps.SSUpper),
+    ({Sps.SSUpper, Sps.Nothing}, Sps.Nothing),
+    ({Sps.SSUpper, Sps.SSLower}, Sps.Nothing),
+    #
+    ({Sps.Nothing, Sps.Nothing}, Sps.Nothing),
+    ({Sps.Nothing, Sps.SSLower}, Sps.SSLower),
+    #
+    ({Sps.SSLower, Sps.SSLower}, Sps.SSLower),
+]
+mask_double_application = {frozenset(k): v for k, v in mask_double_application_list}
+
+transposed_mask = {
+    Sps.Lower: Sps.Upper,
+    Sps.Upper: Sps.Lower,
+    #
+    Sps.SLower: Sps.SUpper,
+    Sps.SUpper: Sps.SLower,
+    #
+    Sps.Diag: Sps.Diag,
+    #
+    Sps.SSUpper: Sps.SSLower,
+    Sps.SSLower: Sps.SSUpper,
+    #
+    Sps.Nothing: Sps.Nothing,
+    #
+    Sps.Dense: Sps.Dense,
+}
+
+
+def _expand_mask(expr: Mask, settings: ExpandSettings) -> MatrixExpr:
+    inner = expand(expr.expr, settings)
+    if isinstance(inner, Mask):
+        my_mask = expr.sparsity
+        inner_mask = inner.sparsity
+        replacement_mask = mask_double_application[frozenset({my_mask, inner_mask})]
+        return expand(Mask(inner.expr, replacement_mask), settings)
+    if isinstance(inner, _Negate):
+        return _Negate(Mask(inner.expr, expr.sparsity))
+    if isinstance(inner, _Transpose):
+        return _Transpose(Mask(inner.expr, transposed_mask[expr.sparsity]))
+    if isinstance(inner, _Sum):
+        return expand(_Sum([Mask(summand, expr.sparsity) for summand in inner.exprs]))
+    if isinstance(inner, Const):
+        if inner.is_zero_element():
+            return inner
+        elif inner.is_identity_element() and expr.sparsity in [
+            Sps.SLower,
+            Sps.SUpper,
+            Sps.SSLower,
+            Sps.SSUpper,
+            Sps.Nothing,
+        ]:
+            return Const(MatrixLit(name="0", shape=expr.shape()))
+        else:
+            return Mask(inner, expr.sparsity)
     else:
-        assert_never(expr)
+        return Mask(inner, expr.sparsity)
 
 
 def _expand_differential(expr: Differential, settings: ExpandSettings) -> MatrixExpr:
@@ -90,8 +248,26 @@ def _expand_differential(expr: Differential, settings: ExpandSettings) -> Matrix
         return _Negate(Differential(inner.expr))
     elif isinstance(inner, _Transpose):
         return _Transpose(Differential(inner.expr))
+    elif isinstance(inner, Mask):
+        return Mask(Differential(inner.expr), inner.sparsity)
     elif isinstance(inner, Const):
         return Const(MatrixLit(name="0", shape=inner.shape()))
+    if isinstance(
+        inner, InnerProduct
+    ):  # If the term is an innerproduct, apply the product rule
+        trace_inner = expand(Differential(inner.left.T * inner.right))
+        # now take the trace of this:
+        return expand(
+            Mask(
+                trace_inner,
+                Sps.Diag,
+            ).T
+            * Mask(
+                trace_inner,
+                Sps.Diag,
+            )
+        )
+
     else:
         return Differential(inner)
 
@@ -123,6 +299,8 @@ def _expand_inner_product(expr: InnerProduct, settings: ExpandSettings) -> Matri
 
 def _expand_transpose(expr: _Transpose, settings: ExpandSettings) -> MatrixExpr:
     inner = expand(expr.expr, settings)
+    if inner.is_scalar():
+        return inner
     if isinstance(inner, _Product):
         left = expand(inner.left, settings)
         right = expand(inner.right, settings)
@@ -143,7 +321,7 @@ def _expand_inverse(inv_expr: Inverse, settings: ExpandSettings) -> MatrixExpr:
         right = expand(inner.right, settings)
         return _Product(Inverse(right), Inverse(left))
     elif isinstance(inv_expr, Inverse):  # Inverse of inverse is identity
-        return expand(inv_expr, settings)
+        return expand(inv_expr.expr, settings)
     else:
         return Inverse(expand(inner, settings))
 
@@ -184,7 +362,7 @@ def _expand_negate(expr: _Negate, settings: ExpandSettings) -> MatrixExpr:
         return inner
     elif isinstance(inner, Const):
         if inner.is_zero_element():
-            return Const(MatrixLit(name="0", shape=inner.shape()))
+            return inner
         else:
             return _Negate(inner)
     else:
@@ -196,7 +374,7 @@ def _expand_product(prod_expr: _Product, settings: ExpandSettings) -> MatrixExpr
     right = expand(prod_expr.right, settings)
 
     if left.is_zero_element() or right.is_zero_element():
-        return Const(MatrixLit(name="0", shape=left.shape()))
+        return Const(MatrixLit(name="0", shape=prod_expr.shape()))
 
     if left.is_identity_element():
         return right

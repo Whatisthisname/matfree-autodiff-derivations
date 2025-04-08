@@ -7,22 +7,37 @@ Next up are vector-jacobian products of the above, needed for reverse-mode autom
 # CAS system to assist in finding the adjoint system
 Can compute differentials, simplify expressions.
 ```text
+Differentiated constraints:
+dc1 = (dA·R + A·dR - dL·B - L·dB) = 0
+dc2 = (dAᵀ·L + Aᵀ·dL - dR·Bᵀ - R·dBᵀ) = 0
+dc3 = (dLᵀ·L + Lᵀ·dL) = 0
+dc4 = (dRᵀ·R + Rᵀ·dR) = 0
+dc5 = (dR·e1 - dc·r~ - c·dr~) = 0
+dc6 = (dc - r~ᵀ·dr~·(||r~||^-3)) = 0
+dc7 = (»dB + ◺dB) = 0
+
 Goal expressions:
-(λ0 · Rᵀ + L · λ1ᵀ) = ∇Aµ
-- (cᵀ · λ4) = ∇r~µ
+(λ1·Rᵀ + L·λ2ᵀ) = ∇Aµ
+(- c·λ5 - (||r~||^-3)·λ6·r~) = ∇r~µ
 
 Adjoint system:
-(∇Rµ + Aᵀ · λ0 - (λ1 · B) + R · λ3ᵀ + R · λ3 + λ4 · e1ᵀ) = 0
-(∇Lµ - (λ0 · Bᵀ) + A · λ1 + L · λ2ᵀ + L · λ2) = 0
-(∇Bµ - (Lᵀ · λ0) - (λ1ᵀ · R)) = 0
-(∇cµ - (r~ᵀ · λ4)) = 0
-```
+(∇Lµ - λ1·Bᵀ + A·λ2 + L·λ3ᵀ + L·λ3) = 0
+(∇Bµ - Lᵀ·λ1 - λ2ᵀ·R + »λ7 + ◺λ7) = 0
+(∇Rµ + Aᵀ·λ1 - λ2·B + R·λ4ᵀ + R·λ4 + λ5·e1ᵀ) = 0
+(∇cµ - r~ᵀ·λ5 + λ6) = 0
 
-![alt text](image-1.png)
-Output below. Next would be isolating within all the inner products and grouping them.
-
-```
-dµ = (〈∇Rµ , dR〉 + 〈∇Lµ , dL〉 + 〈∇Bµ , dB〉 + 〈∇cµ , dc〉 + 〈λ0 , dA · R〉 + 〈λ0 , A · dR〉 + 〈λ0 , - dL · B〉 + 〈λ0 , - L · dB〉 + 〈λ1 , dAᵀ · L〉 + 〈λ1 , Aᵀ · dL〉 + 〈λ1 , - dR · Bᵀ〉 + 〈λ1 , - R · dBᵀ〉 + 〈λ2 , dLᵀ · L〉 + 〈λ2 , Lᵀ · dL〉 + 〈λ3 , dRᵀ · R〉 + 〈λ3 , Rᵀ · dR〉 + 〈λ4 , dR · e1〉 + 〈λ4 , - dc · r~〉 + 〈λ4 , - c · dr~〉)
+A     matrix, A rows x A cols
+B     matrix, B rows x B cols
+L     matrix, A rows x B rows
+R     matrix, A cols x B cols
+r~    vector, A cols
+λ1    matrix, A rows x B cols
+λ2    matrix, A cols x B rows
+λ3    matrix, B rows x B rows
+λ4    matrix, B cols x B cols
+λ5    vector, A cols
+λ6    scalar
+λ7    matrix, B rows x B cols
 ```
 
 # Random taylor stuff

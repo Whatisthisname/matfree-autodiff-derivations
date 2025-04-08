@@ -8,6 +8,7 @@ from tree_exprs import (
     _Transpose,
     Dim,
     InnerProduct,
+    Mask,
     MatrixLit,
     Shape,
     Var,
@@ -19,55 +20,6 @@ from tree_exprs import (
     MatrixExpr,
 )
 from tree_expand import ExpandSettings, expand, expand_equation
-
-A_rows = Dim("A rows")
-A_cols = Dim("A cols")
-
-B_rows = Dim("B rows")
-B_cols = Dim("B cols")
-
-A = Var(MatrixLit(name="A", shape=Shape((A_rows, A_cols))))
-B = Var(MatrixLit(name="B", shape=Shape((B_rows, B_cols))))
-
-L = Var(MatrixLit(name="L", shape=Shape((A_rows, B_rows))))
-R = Var(MatrixLit(name="R", shape=Shape((A_cols, B_cols))))
-
-e_1 = Const(MatrixLit(name="e1", shape=Shape((R.cols, UnitDim))))
-r_input = Var(MatrixLit(name="r~", shape=Shape((R.rows, UnitDim))))
-c = Var(MatrixLit(name="c", shape=Shape((UnitDim, UnitDim))))
-
-
-dc1 = Equation(A * R, L * B).isolate_zero_RHS().differentiate()
-dc2 = Equation(A.T * L, R * B.T).isolate_zero_RHS().differentiate()
-dc3 = (
-    Equation(L.T * L, Const(MatrixLit(name="1", shape=Shape((B_rows, B_rows)))))
-    .isolate_zero_RHS()
-    .differentiate()
-)
-dc4 = (
-    Equation(R.T * R, Const(MatrixLit(name="1", shape=Shape((B_cols, B_cols)))))
-    .isolate_zero_RHS()
-    .differentiate()
-)
-
-dc5 = Equation(R * e_1, c * r_input).isolate_zero_RHS().differentiate()
-
-dcs = [dc.lhs for dc in [dc1, dc2, dc3, dc4, dc5]]
-lambdas = [
-    Var(MatrixLit(name=f"λ{i}", shape=expr.shape())) for i, expr in enumerate(dcs)
-]
-
-vars: list[Var] = [R, L, B, c]
-grads = [Const(MatrixLit(name=f"∇{var.term.name}µ", shape=var.shape())) for var in vars]
-d_mu = Differential(Var(MatrixLit(name="µ", shape=Shape((UnitDim, UnitDim)))))
-
-final_eq = Equation(
-    d_mu,
-    _Sum(
-        [InnerProduct(grad, Differential(var)) for grad, var in zip(grads, vars)]
-        + [InnerProduct(lambdas[i], dc) for i, dc in enumerate(dcs)]
-    ),
-)
 
 
 def satisfies_predicate(
@@ -117,6 +69,11 @@ def isolate_predicate_in_compact_inner_product_RHS(
             InnerProduct(-innerProduct.left, negate.expr), predicate
         )
 
+    elif isinstance(mask := innerProduct.right, Mask):
+        return isolate_predicate_in_compact_inner_product_RHS(
+            InnerProduct(Mask(innerProduct.left, mask.sparsity), mask.expr), predicate
+        )
+
     elif isinstance(differential := innerProduct.right, Differential):
         if satisfies_predicate(differential, predicate):
             return InnerProduct(innerProduct.left, differential)
@@ -156,81 +113,33 @@ def isolate_predicate_in_compact_inner_product_RHS(
         )
 
 
-# niceprint(final_eq)
-
-final_eq_simple = expand_equation(final_eq)
-
-# niceprint(final_eq_simple)
+def get_variables_from_expr(expr: MatrixExpr) -> typing.List[Var]:
+    if isinstance(expr, Var):
+        return [expr]
+    if isinstance(expr, Differential):
+        return get_variables_from_expr(expr.expr)
+    if isinstance(expr, Const):
+        return []
+    elif isinstance(expr, _Product):
+        return get_variables_from_expr(expr.left) + get_variables_from_expr(expr.right)
+    elif isinstance(expr, _Transpose):
+        return get_variables_from_expr(expr.expr)
+    elif isinstance(expr, _Negate):
+        return get_variables_from_expr(expr.expr)
+    elif isinstance(expr, InnerProduct):
+        return get_variables_from_expr(expr.left) + get_variables_from_expr(expr.right)
+    elif isinstance(expr, _Sum):
+        return sum([get_variables_from_expr(e) for e in expr.exprs], [])
+    elif isinstance(expr, Mask):
+        return get_variables_from_expr(expr.expr)
+    else:
+        raise NotImplementedError(
+            f"get_variables_from_expr not implemented for {type(expr)}"
+        )
 
 
 def is_differential(x: MatrixExpr) -> bool:
     return isinstance(x, Differential)
-
-
-# isolate all the inner products
-# TODO the transposes are not being isolated correctly
-
-new_eq = Equation(
-    final_eq_simple.lhs,
-    _Sum(
-        [
-            isolate_predicate_in_compact_inner_product_RHS(
-                typing.cast(InnerProduct, expand(expr)), is_differential
-            )
-            if isinstance(expr, InnerProduct)
-            else expr
-            for expr in final_eq_simple.rhs.exprs
-        ]
-    ),
-)
-
-print()
-niceprint((new_eq))
-
-groups = defaultdict(lambda: [])
-for expr in new_eq.rhs.exprs:
-    expr = typing.cast(InnerProduct, expr)
-    groups[expr.right.str_compact()].append(expr)
-
-grouped_expr = _Sum(
-    [
-        InnerProduct(_Sum([ip.left for ip in inner_prods]), inner_prods[0].right)
-        for inner_prods in groups.values()
-    ]
-)
-
-settings = ExpandSettings(expand_inner_products=False)
-
-print()
-simplified = typing.cast(_Sum, expand(grouped_expr, settings=settings))
-niceprint(simplified)
-
-final_gradient_expressions = []
-equations = []
-for inner_prod in simplified.exprs:
-    inner_prod = typing.cast(InnerProduct, inner_prod)
-    if inner_prod.right.str_compact() in ["dA", "dr~"]:
-        final_gradient_expressions.append(
-            Equation(
-                inner_prod.left,
-                Var(
-                    MatrixLit(
-                        inner_prod.left.shape(), f"∇{inner_prod.right.expr.term.name}µ"
-                    )
-                ),
-            )
-        )
-    else:
-        equations.append(
-            Equation(inner_prod.left, Var(MatrixLit(inner_prod.left.shape(), "0")))
-        )
-
-print()
-print("Goal expressions:")
-[niceprint(eq) for eq in final_gradient_expressions]
-print()
-print("Adjoint system:")
-[niceprint(eq) for eq in equations]
 
 
 """

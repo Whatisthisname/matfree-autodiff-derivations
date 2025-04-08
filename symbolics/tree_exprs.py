@@ -94,9 +94,13 @@ class MatrixExpr(Displayable, typing.Protocol):
         return _Sum([self, -other])
 
     def __mul__(self, other: "MatrixExpr") -> "MatrixExpr":
+        if isinstance(other, (int)) and other == 0:
+            return Const(MatrixLit(name="0", shape=self.shape()))
         return _Product(self, other)
 
     def __rmul__(self, other: "MatrixExpr") -> "MatrixExpr":
+        if isinstance(other, (int)) and other == 0:
+            return Const(MatrixLit(name="0", shape=self.shape()))
         return _Product(other, self)
 
     def __inv__(self) -> "MatrixExpr":
@@ -114,8 +118,11 @@ class MatrixExpr(Displayable, typing.Protocol):
     def is_vector(self) -> bool:
         return self.shape().shape[1] == UnitDim
 
+    def is_square(self) -> bool:
+        return self.shape().shape[0] == self.shape().shape[1]
 
-class Sparsity(StrEnum):  # type: ignore[misc]
+
+class Sps(StrEnum):  # type: ignore[misc]
     Dense = "Full"
     Diag = "Diag"
     Upper = "Upper"
@@ -123,13 +130,14 @@ class Sparsity(StrEnum):  # type: ignore[misc]
     SUpper = "Strict Upper"
     SLower = "Strict Lower"
     SSUpper = "I>>"
+    Nothing = "Nothing"
+    SSLower = "I<<"
 
 
-class Mask(MatrixExpr):  # TODO finish implementation
-    def __init__(self, expr: MatrixExpr, sparsity: Sparsity):
+class Mask(MatrixExpr):
+    def __init__(self, expr: MatrixExpr, sparsity: Sps):
         self.expr = expr
         self.sparsity = sparsity
-        raise NotImplementedError()
 
     def shape(self) -> Shape:
         return self.expr.shape()
@@ -137,21 +145,34 @@ class Mask(MatrixExpr):  # TODO finish implementation
     def __repr__(self) -> str:
         return f"Mask({self.expr}, {self.sparsity})"
 
-    def str_compact(self) -> str:
-        if self.sparsity == Sparsity.SLower:
-            return f"◺{self.expr.str_compact()}"
-        elif self.sparsity == Sparsity.Lower:
-            return f"◣{self.expr.str_compact()}"
-        elif self.sparsity == Sparsity.SUpper:
-            return f"◹{self.expr.str_compact()}"
-        elif self.sparsity == Sparsity.Upper:
-            return f"◥{self.expr.str_compact()}"
-        elif self.sparsity == Sparsity.Diag:
-            return f"⟍{self.expr.str_compact()}"
-        elif self.sparsity == Sparsity.Dense:
-            return f"█{self.expr.str_compact()}"
+    @staticmethod
+    def _get_symbol(sparsity: Sps) -> str:
+        if sparsity == Sps.Dense:
+            return f"█"
+        elif sparsity == Sps.Diag:
+            return f"⟍"
+        elif sparsity == Sps.Upper:
+            return f"◥"
+        elif sparsity == Sps.Lower:
+            return f"◣"
+        elif sparsity == Sps.SUpper:
+            return f"◹"
+        elif sparsity == Sps.SLower:
+            return f"◺"
+        elif sparsity == Sps.SSUpper:
+            return f"»"
+        elif sparsity == Sps.Nothing:
+            return f"☐"
+        elif sparsity == Sps.SSLower:
+            return f"«"
         else:
-            raise NotImplementedError(f"Mask not implemented for {self.sparsity}")
+            assert_never(sparsity)
+
+    def str_compact(self) -> str:
+        if isinstance(self.expr, (_Sum, _Product)):
+            return Mask._get_symbol(self.sparsity) + f"({self.expr.str_compact()})"
+        else:
+            return Mask._get_symbol(self.sparsity) + f"{self.expr.str_compact()}"
 
 
 class Differential(MatrixExpr):
@@ -165,7 +186,10 @@ class Differential(MatrixExpr):
         return f"Differential({self.expr})"
 
     def str_compact(self) -> str:
-        return f"d{self.expr.str_compact()}"
+        if isinstance(self.expr, (_Sum, _Product)):  # TODO perhaps fix here.
+            return f"d({self.expr.str_compact()})"
+        else:
+            return f"d{self.expr.str_compact()}"
 
 
 class Const(MatrixExpr):
@@ -216,6 +240,7 @@ class _Transpose(MatrixExpr):
 class Inverse(MatrixExpr):
     def __init__(self, expr: MatrixExpr):
         self.expr = expr
+        assert expr.is_square(), f"Inverse requires a square matrix, got {expr.shape()}"
 
     def __repr__(self) -> str:
         return f"Inverse({self.expr})"
@@ -265,7 +290,7 @@ class _Negate(MatrixExpr):
         return f"Negate({self.expr})"
 
     def str_compact(self) -> str:
-        return f"- ({self.expr.str_compact()})"
+        return f"- {self.expr.str_compact()}"
 
 
 class _Product(MatrixExpr):
@@ -286,7 +311,7 @@ class _Product(MatrixExpr):
         return f"Product({self.left}, {self.right})"
 
     def str_compact(self) -> str:
-        return f"{self.left.str_compact()} · {self.right.str_compact()}"
+        return f"{self.left.str_compact()}·{self.right.str_compact()}"
 
     def shape(self) -> Shape:
         return self._shape
