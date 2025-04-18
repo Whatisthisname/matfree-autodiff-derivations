@@ -31,19 +31,15 @@ from VJP_adjoint_helper_functions import (
 Square_dim = Dim("n")
 
 A = Var(MatrixLit(name="A", shape=Shape((Square_dim, Square_dim))))
-Q = Var(MatrixLit(name="Q", shape=Shape((Square_dim, Square_dim))))
-R = Var(MatrixLit(name="R", shape=Shape((Square_dim, Square_dim))))
-I_R = Const(MatrixLit(name="1", shape=Shape((Square_dim, Square_dim))))
-zero = Const(MatrixLit(name="0", shape=Shape((Square_dim, Square_dim))))
+L = Var(MatrixLit(name="L", shape=Shape((Square_dim, Square_dim))))
 
 # Mark input and output variables
 input_variables = [A]
-output_variables = [Q, R]
+output_variables = [L]
 
 # Define constraints:
 constraints = [
-    Equation(Mask(Q.T * Q - I_R, Sps.Upper) + Mask(R, Sps.SLower), zero),
-    Equation(A, Q * R).flip(),
+    Equation(Mask(L * L.T - A, Sps.Lower) + Mask(L, Sps.SUpper), L * 0),
 ]
 
 # Run the script!

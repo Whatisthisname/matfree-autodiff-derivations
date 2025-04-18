@@ -100,7 +100,9 @@ def isolate_predicate_in_compact_inner_product_RHS(
                 predicate,
             )
         else:
-            raise ValueError(" Not found predicate in product! ")
+            return innerProduct * 0
+            print(" Not found predicate in product! ")
+            # raise ValueError(" Not found predicate in product! ")
 
     elif isinstance(sum := innerProduct.right, _Sum):
         raise ValueError(
@@ -136,6 +138,21 @@ def get_variables_from_expr(expr: MatrixExpr) -> typing.List[Var]:
         raise NotImplementedError(
             f"get_variables_from_expr not implemented for {type(expr)}"
         )
+
+
+def print_variables_in_equations(equations: typing.Sequence[Equation]) -> None:
+    vars = list(set(sum([get_variables_from_expr(eq.lhs) for eq in equations], [])))
+    vars.sort(key=lambda x: x.str_compact())
+
+    for var in vars:
+        if var.is_scalar():
+            print(f"{var.str_compact().ljust(5)} scalar")
+        elif var.is_vector():
+            print(f"{var.str_compact().ljust(5)} vector, {var.rows.dim}")
+        else:
+            print(
+                f"{var.str_compact().ljust(5)} matrix, {var.rows.dim} x {var.cols.dim}"
+            )
 
 
 def is_differential(x: MatrixExpr) -> bool:

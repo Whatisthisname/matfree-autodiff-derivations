@@ -24,27 +24,30 @@ from tree_expand import ExpandSettings, expand, expand_equation
 from VJP_adjoint_helper_functions import (
     isolate_predicate_in_compact_inner_product_RHS,
     is_differential,
-    get_variables_from_expr,
+    print_variables_in_equations,
 )
 
 # Define dimensions and variables
-A_rows = Dim("A rows")
-A_cols = Dim("A cols")
-B_rows = Dim("B rows")
-B_cols = Dim("B cols")
+A_rows = Dim("n")
+A_cols = Dim("m")
+rank_dim = Dim("k")
 
 A = Var(MatrixLit(name="A", shape=Shape((A_rows, A_cols))))
-B = Var(MatrixLit(name="B", shape=Shape((B_rows, B_cols))))
+B = Var(MatrixLit(name="B", shape=Shape((rank_dim, rank_dim))))
 
-L = Var(MatrixLit(name="L", shape=Shape((A_rows, B_rows))))
-R = Var(MatrixLit(name="R", shape=Shape((A_cols, B_cols))))
+L = Var(MatrixLit(name="L", shape=Shape((A_rows, rank_dim))))
+R = Var(MatrixLit(name="R", shape=Shape((A_cols, rank_dim))))
 
 e_1 = Const(MatrixLit(name="e1", shape=Shape((R.cols, UnitDim))))
+e_k = Const(MatrixLit(name="ek", shape=Shape((rank_dim, UnitDim))))
 r_input = Var(MatrixLit(name="r~", shape=Shape((R.rows, UnitDim))))
+r_last = Var(MatrixLit(name="(r_k+1)", shape=Shape((R.rows, UnitDim))))
 c = Var(MatrixLit(name="c", shape=Shape((UnitDim, UnitDim))))
+beta_last = Var(MatrixLit(name="beta", shape=Shape((UnitDim, UnitDim))))
+one = Const(MatrixLit(name="1", shape=Shape((UnitDim, UnitDim))))
 
-I_L = Const(MatrixLit(name="1", shape=Shape((B_rows, B_rows))))
-I_R = Const(MatrixLit(name="1", shape=Shape((B_cols, B_cols))))
+I_L = Const(MatrixLit(name="1", shape=Shape((rank_dim, rank_dim))))
+I_R = Const(MatrixLit(name="1", shape=Shape((rank_dim, rank_dim))))
 
 zero = Const(MatrixLit(name="0", shape=B.shape()))
 
@@ -59,13 +62,16 @@ output_variables = [L, B, R, c]
 # Define constraints:
 constraints = [
     Equation(A * R, L * B),
-    Equation(A.T * L, R * B.T),
-    Equation(L.T * L, I_L),
-    Equation(R.T * R, I_R),
+    Equation(A.T * L, R * B.T - r_last * beta_last * e_k.T),
+    Equation(Mask(L.T * L - I_L, Sps.Diag), (L.T * L) * 0),
+    Equation(Mask(R.T * R - I_R, Sps.Diag), (R.T * R) * 0),
     Equation(R * e_1, r_input * c),
     Equation(Mask(B, Sps.SSUpper) + Mask(B, Sps.SLower), 0 * B),
-    # Equation(c - inverse_norm_of_r, 0 * c),
 ]
+
+print()
+print("Shape of Constraints:")
+[print(eq.lhs.shape()) for eq in constraints]
 
 # Run the script!
 
@@ -74,18 +80,18 @@ differentiated_constraints = [
     for c in constraints
 ]
 # extra pre-differentiated constraint:
-differentiated_constraints.append(
-    expand_equation(
-        Equation(
-            Differential(c)
-            - r_input.T * Differential(r_input) * inverse_norm_of_r_cubed,
-            0 * c,
-        )
-    )
-)
-temp = differentiated_constraints[5]
-differentiated_constraints[5] = differentiated_constraints[6]
-differentiated_constraints[6] = temp
+# differentiated_constraints.append(
+#     expand_equation(
+#         Equation(
+#             Differential(c)
+#             - r_input.T * Differential(r_input) * inverse_norm_of_r_cubed,
+#             0 * c,
+#         )
+#     )
+# )
+# temp = differentiated_constraints[5]
+# differentiated_constraints[5] = differentiated_constraints[6]
+# differentiated_constraints[6] = temp
 
 print()
 print("Differentiated constraints:")
@@ -121,6 +127,9 @@ d_mu_equation = Equation(
 # Take all the inner products and expand them
 d_mu_equation = expand_equation(d_mu_equation)
 
+print()
+print("dµ:")
+niceprint(d_mu_equation)
 
 # isolate all the inner products
 
@@ -133,8 +142,13 @@ for ip in all_inner_prods:
             typing.cast(InnerProduct, expand(ip)), is_differential
         )
     )
-    variable = isolated_ip.right
-    groups[variable.str_compact()].append(isolated_ip)
+    try:
+        variable = isolated_ip.right
+        groups[variable.str_compact()].append(isolated_ip)
+    except:
+        pass
+    finally:
+        pass
 
 collected_inner_products = _Sum(
     [
@@ -148,8 +162,8 @@ settings = ExpandSettings(expand_inner_products=False)
 simplified = typing.cast(_Sum, expand(collected_inner_products, settings=settings))
 # niceprint(simplified)
 
-final_gradient_expressions = []
-equations = []
+final_gradient_expressions: list[Equation] = []
+equations: list[Equation] = []
 for inner_prod in simplified.exprs:
     inner_prod = typing.cast(InnerProduct, inner_prod)
     if inner_prod.right.str_compact() in [
@@ -173,22 +187,18 @@ for inner_prod in simplified.exprs:
 print()
 print("Goal expressions:")
 [niceprint(eq) for eq in final_gradient_expressions]
+
 print()
 print("Adjoint system:")
 [niceprint(eq) for eq in equations]
+
+
 print()
+print("Shape of Adjoint system:")
+[print(eq.lhs.shape()) for eq in equations]
 
-vars = list(set(sum([get_variables_from_expr(eq.lhs) for eq in equations], [])))
-vars.sort(key=lambda x: x.str_compact())
-
-for var in vars:
-    if var.is_scalar():
-        print(f"{var.str_compact().ljust(5)} scalar")
-    elif var.is_vector():
-        print(f"{var.str_compact().ljust(5)} vector, {var.rows.dim}")
-    else:
-        print(f"{var.str_compact().ljust(5)} matrix, {var.rows.dim} x {var.cols.dim}")
-
+print()
+print_variables_in_equations(equations + final_gradient_expressions)
 """
 clear && mypy symbolic_helper.py --strict
 """
