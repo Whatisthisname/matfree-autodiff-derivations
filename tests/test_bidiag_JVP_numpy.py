@@ -176,6 +176,8 @@ def test_bidiag_jvp(seed):
     assert np.allclose((result_wiggled.c - result.c) / h, tangents.c, atol=1e-2)
     print(" (OK)")
 
+    print((result_wiggled.c - result.c) / h, tangents.c)
+
     for idx in range(1, len(result.rs)):
         for field in ["rs", "alphas", "ls", "betas"]:
             print(f"-- Field: {field}[{idx}]".ljust(20), sep="", end="")
@@ -186,9 +188,9 @@ def test_bidiag_jvp(seed):
                 ) / h
 
                 exact = tangents.__getattribute__(field)[idx]
-                assert np.allclose(
-                    aprox, exact, atol=1e-2
-                ), f"\nApprox: {aprox}, \nExact: {exact}"
+                assert np.allclose(aprox, exact, atol=1e-2), (
+                    f"\nApprox: {aprox}, \nExact: {exact}"
+                )
                 print(" (OK)")
             except IndexError:
                 print(" (IndexError)")
@@ -262,3 +264,6 @@ def test_bidiag_wide_matrix(seed: int):
         R @ B.T + np.outer(result.betas[r] * result.rs[r + 1], np.eye(1, r, k=r - 1)),
         atol=1e-5,
     ), "A.T L != R B.T + extra"
+
+
+test_bidiag_jvp(0)
