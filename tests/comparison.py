@@ -1,4 +1,4 @@
-from tests.test_bidiag_JVP_jax import BidiagOutput, bidiagonalize_jvp_jax
+from tests.test_bidiag_JVP_jax import BidiagOutput, bidiagonalize_jvp
 from test_bidiag_JVP_numpy import bidiagonalize_jvp as bidiagonalize_jvp_npy
 
 import jax
@@ -20,7 +20,7 @@ def test_bidiagonalize_jvp_jax_vs_numpy():
 
     n_total_iterations = min(A.shape[0], A.shape[1]) - 1
 
-    (jaxresult_fwd, jaxresult_tan) = bidiagonalize_jvp_jax(
+    (jaxresult_fwd, jaxresult_tan) = bidiagonalize_jvp(
         (A, v), (dA, dv), n_total_iterations=n_total_iterations
     )
 
@@ -43,7 +43,7 @@ def test_bidiagonalize_jvp_jax_vs_numpy():
     print("d_betas:", jaxresult_tan.betas)
     print("d_rs:\n", jaxresult_tan.rs)
     print("d_ls:\n", jaxresult_tan.ls)
-    print("r_beta_residual:", jaxresult_tan.r_beta_residual)
+    print("r_beta_residual:", jaxresult_tan.res)
     print("d_c:", jaxresult_tan.c)
     # # ## forward pass
     # print("\nNumPy Results:")
