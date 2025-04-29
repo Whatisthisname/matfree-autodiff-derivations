@@ -14,6 +14,25 @@ jax.config.update("jax_enable_x64", True)
 
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass
+class BidiagInput:
+    A: ArrayLike
+    """(n, m) matrix"""
+    start_vector: ArrayLike
+    r"""(m,) vector, a.k.a. $\tilde r$"""
+
+    def tree_flatten(self):
+        children = (self.A, self.start_vector)
+        aux_data = None
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        A, start_vector = children
+        return cls(A=A, start_vector=start_vector)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass
 class BidiagOutput:
     rs: ArrayLike
     """(m,k) float array"""
@@ -26,7 +45,7 @@ class BidiagOutput:
     c: float
     """(k-1,) float array"""
     res: ArrayLike
-    """(m,) vector,  beta_k * r_{k+1}"""
+    """(m,) vector, beta_k * r_{k+1}"""
     iterations_finished: int
 
     def tree_flatten(self):
@@ -355,7 +374,7 @@ def bidiagonalize_jvp(
         A.T @ loop_out.d_ls[:, k]
         + dA.T @ loop_out.ls[:, k]
         - loop_out.as_[k] * loop_out.d_rs[:, k]
-        - loop_out.d_as[k] * loop_out.rs[:, k],
+        - loop_out.d_as[k] * loop_out.rs[:, k]
     )
 
     # Create primal output
@@ -383,12 +402,14 @@ def bidiagonalize_jvp(
     return primal_output, tangent_output
 
 
-@jax.tree_util.register_pytree_node_class
-@dataclasses.dataclass
-class BidiagCache:
-    primal: BidiagOutput
-    A: ArrayLike
-    start_vector: ArrayLike
+BidiagCache = typing.NamedTuple(
+    "BidiagCache",
+    [
+        ("primal", BidiagOutput),
+        ("A", ArrayLike),
+        ("start_vector", ArrayLike),
+    ],
+)
 
 
 def vjp_forward(primals, n_total_iterations) -> tuple[BidiagOutput, BidiagCache]:
@@ -396,28 +417,36 @@ def vjp_forward(primals, n_total_iterations) -> tuple[BidiagOutput, BidiagCache]
     return primal, primal  # todo make cache
 
 
+# TODO: Check indexing in nabla, probably have to shift by one.
+
+
 def vjp_backward(
     cache: BidiagCache,
-    grads: BidiagOutput,
+    nabla: BidiagOutput,
 ) -> tuple[BidiagOutput, BidiagOutput]:
-    pri = cache.primal
-    k = pri.iterations_finished
+    betas = cache.primal.betas
+    alphas = cache.primal.alphas
+    rs = cache.primal.rs
+    ls = cache.primal.ls
+    c = cache.primal.c
+    k = cache.primal.iterations_finished
+    A = cache.A
     (n, m) = cache.A.shape
 
     # initialize adjoint variables
-    l1s = jnp.zeros((n, 1 + k + 1))
-    l2s = jnp.zeros((m, 1 + k))
-    l2s = l2s.at[:, k].set(-grads.res)
-    l3s = jnp.zeros_like(pri.alphas)
-    l4s = jnp.zeros_like(pri.betas)
+    lams = jnp.zeros((n, 1 + k + 1))  # lambdas
+    rhos = jnp.zeros((m, 1 + k))  # rhos
+    rhos = rhos.at[:, k].set(-nabla.res)
+    sigmas = jnp.zeros_like(alphas)
+    omegas = jnp.zeros_like(betas)
 
     CarryState = typing.NamedTuple(
         "CarryState",
         [
-            ("l1s", ArrayLike),
-            ("l2s", ArrayLike),
-            ("l3s", ArrayLike),
-            ("l4s", ArrayLike),
+            ("lams", ArrayLike),
+            ("rhos", ArrayLike),
+            ("sigmas", ArrayLike),
+            ("omegas", ArrayLike),
         ],
     )
 
@@ -425,51 +454,46 @@ def vjp_backward(
         # 'i' will go from 0 to k-2.
         # we subtract i from k to go from k to 2 (inclusive)
 
-        t = -grads.alphas[:, k - i] - pri.rs[:, k - i].T @ carry.l2s[:, k - i]
-        l3s = carry.l3s.at[:, k - i].set(
-            pri.ls[:, k - i].T
-            @ (
-                cache.A @ carry.l2s[:, k - i]
-                - grads.ls[:, k - i]
-                - carry.l1s[:, k - i + 1] * pri.betas[k - i]
-            )
-            - pri.alphas[k - i] * t
+        lams = carry.lams
+        rhos = carry.rhos
+
+        n = k - i
+
+        t = -nabla.alphas[:, n] - rs[:, n].T @ rhos[:, n]
+        sigmas_ = carry.sigmas.at[:, n].set(
+            -ls[:, n].T @ (nabla.ls[:, n] + betas[n] * lams[:, n + 1] - A @ rhos[:, n])
+            - alphas[n] * t
         )
-        l1s = carry.l1s.at[:, k - i].set(
+        lams_ = lams.at[:, n].set(
             (
-                -grads.ls[:, k - i]
-                - carry.l3s[:, k - i] * pri.ls[:, k - i]
-                + cache.A @ carry.l2s[:, k - i]
-                - carry.l1s[: k - i + 1] * pri.betas[k - i]
+                -nabla.ls[:, n]
+                - betas[n] * lams[: n + 1]
+                + A @ rhos[:, n]
+                - sigmas_[:, n] * ls[:, n]
             )
-            / pri.alphas[k - i]
+            / alphas[n]
         )
 
-        w = -grads.betas[:, k - i - 1] - pri.ls[:, k - i - 1].T @ l1s[:, k - i]
-        l4s = carry.l4s.at[:, k - i].set(
-            -pri.rs[:, k - i].T
-            @ (
-                grads.rs[:, k - i]
-                + cache.A * carry.l1s[:, k - i]
-                + pri.alphas[k - i] * carry.l2s[:, k - i]
-            )
-            - pri.betas[k - i - 1] * w
+        w = -nabla.betas[:, n - 1] - ls[:, n - 1].T @ lams_[:, n]
+        omegas_ = carry.omegas.at[:, n].set(
+            -rs[:, n].T @ (nabla.rs[:, n] - A.T * lams_[:, n] + alphas[n] * rhos[:, n])
+            - betas[n - 1] * w
         )
-        l2s = carry.l2s.at[:, k - i - 1].set(
+        rhos_ = rhos.at[:, n - 1].set(
             (
-                -grads.rs[:, k - i]
-                - cache.A.T @ carry.l1s[:, k - i]
-                - pri.alphas[k - i] * carry.l2s[:, k - i]
-                - l4s[:, k - i] * pri.rs[:, k - i]
+                -nabla.rs[:, n]
+                + A.T @ lams_[:, n]
+                - alphas[n] * rhos[:, n]
+                - omegas_[:, n] * rs[:, n]
             )
-            / pri.betas[k - i - 1]
+            / betas[n - 1]
         )
 
         return CarryState(
-            l1s=l1s,
-            l2s=l2s,
-            l3s=l3s,
-            l4s=l4s,
+            l1s=lams_,
+            l2s=rhos_,
+            l3s=sigmas_,
+            l4s=omegas_,
         )
 
     output: CarryState = jax.lax.fori_loop(
@@ -477,28 +501,40 @@ def vjp_backward(
         upper=k - 2 + 1,  # (+ 1 to include in iteration)
         fun=body_fun,
         init_val=CarryState(
-            l1s=l1s,
-            l2s=l2s,
-            l3s=l3s,
-            l4s=l4s,
+            lams=lams,
+            rhos=rhos,
+            sigmas=sigmas,
+            omegas=omegas,
         ),
     )
 
-    output.l4s = output.l4s.at[:, 1].set(
-        -pri.rs[:, 1].T
-        @ (
-            cache.A.T @ output.l1s[:, 1]
-            + grads.rs[:, 1]
-            + pri.alphas[1] * output.l2s[:, 1]
-            + pri.c * grads.c
+    t = -nabla.alphas[1] - rs[:, 1].T @ output.rhos[:, 1]
+    output.sigmas = (
+        output.sigmas.at[:, 1].set(
+            -ls[:, 1].T
+            @ (nabla.ls[:, 1] + betas[1] * output.lams[:, 2] - A @ output.rhos[:, 1])
         )
+        - alphas[:, 1] * t
     )
 
-    l5 = (
-        grads.rs[:, 1]
-        + cache.A.T @ output.l1s[:, 1]
-        + pri.alphas[1] * output.l2s[:, 1]
-        + output.l4s[:, 1] * pri.rs[:, 1]
+    output.lams = (
+        output.lams.at[:, 1].set(
+            -nabla.ls[:, 1] - betas[1] * output.lams[:, 2] + A @ output.rhos[:, 1]
+        )
+        / alphas[1]
+    )
+
+    output.omegas = output.omegas.at[:, 1].set(
+        -rs[:, 1].T
+        @ (nabla.rs[:, 1] - A.T @ output.lams[:, 1] + alphas[1] * output.rhos[:, 1])
+        - c * nabla.c
+    )
+
+    kappa = (
+        -nabla.rs[:, 1]
+        + A.T @ output.lams[:, 1]
+        - alphas[1] * output.rhos[:, 1]
+        - output.omegas[:, 1] * rs[:, 1]
     )
 
     # TODO: convert these lambdas into grads.A and grads.start_vector, by having a look at the differentiated constraints
@@ -680,10 +716,8 @@ def test_bidiag_jvp_with_autodiff(seed):
     assert jnp.allclose(jax_tangent.betas, my_tangent.betas, atol=1e-6), (
         f"betas differs: {jax_tangent.betas} vs {my_tangent.betas}"
     )
-    assert jnp.allclose(
-        jax_tangent.r_beta_residual, my_tangent.r_beta_residual, atol=1e-6
-    ), (
-        f"r_beta_residual differs: {jax_tangent.r_beta_residual} vs {my_tangent.r_beta_residual}"
+    assert jnp.allclose(jax_tangent.res, my_tangent.res, atol=1e-6), (
+        f"res differs: {jax_tangent.res} vs {my_tangent.res}"
     )
 
     # # if __name__ == "__main__":
