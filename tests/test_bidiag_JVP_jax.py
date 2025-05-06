@@ -368,32 +368,44 @@ BidiagCache = typing.NamedTuple(
         ("primal", BidiagOutput),
         ("A", ArrayLike),
         ("start_vector", ArrayLike),
+        ("n_total_iterations", int),
     ],
 )
 
 
 def vjp_forward(primals, n_total_iterations) -> tuple[BidiagOutput, BidiagCache]:
     primal = bidiagonalize(primals, n_total_iterations)
-    return primal, primal  # todo make cache
-
-
-# TODO: Check indexing in nabla, probably have to shift by one.
+    cache = BidiagCache(
+        primal=primal,
+        A=primals[0],
+        start_vector=primals[1],
+        n_total_iterations=n_total_iterations,
+    )
+    return primal, cache
 
 
 def vjp_backward(
     cache: BidiagCache,
     nabla: BidiagOutput,
-) -> tuple[BidiagOutput, BidiagOutput]:
+) -> BidiagInput:
+    k = cache.n_total_iterations
+    # ...
+
+    # Unpack primal variables from cache. These are 0-indexed.
     betas = cache.primal.betas
+    jax.debug.print("betas: {}", betas)
     alphas = cache.primal.alphas
+    jax.debug.print("alphas: {}", alphas)
     rs = cache.primal.rs
     ls = cache.primal.ls
+    jax.debug.print("ls, rs: {}, {}", ls, rs)
     c = cache.primal.c
-    k = cache.primal.iterations_finished
     A = cache.A
+    jax.debug.print("A: {}", A)
     (n, m) = cache.A.shape
 
-    # initialize adjoint variables
+    # Initialize adjoint variables.
+    # We use 1-indexing for all of these to follow the math a bit more easily.
     lams = jnp.zeros((n, 1 + k + 1))  # lambdas
     rhos = jnp.zeros((m, 1 + k))  # rhos
     rhos = rhos.at[:, k].set(-nabla.res)
@@ -411,55 +423,62 @@ def vjp_backward(
     )
 
     def body_fun(i: int, carry: CarryState):
-        # 'i' will go from 0 to k-2.
+        jax.debug.print("entered loop with i = {i}", i=i)
+        # 'i' will go from 0 to k-2 (inclusive)
         # we subtract i from k to go from k to 2 (inclusive)
+        ai = k - i
+        """adjoint index, 1-based"""
+        pi = k - i - 1
+        """primal index, 0-based"""
 
         lams = carry.lams
         rhos = carry.rhos
 
-        n = k - i
-
-        t = -nabla.alphas[:, n] - rs[:, n].T @ rhos[:, n]
-        sigmas_ = carry.sigmas.at[:, n].set(
-            -ls[:, n].T @ (nabla.ls[:, n] + betas[n] * lams[:, n + 1] - A @ rhos[:, n])
-            - alphas[n] * t
+        t = -nabla.alphas[pi] - rs[:, pi].T @ rhos[:, ai]
+        sigmas_ = carry.sigmas.at[ai].set(
+            -ls[:, pi].T
+            @ (nabla.ls[:, pi] + betas[pi] * lams[:, ai + 1] - A @ rhos[:, ai])
+            - alphas[pi] * t
         )
-        lams_ = lams.at[:, n].set(
+        lams_ = lams.at[:, ai].set(
             (
-                -nabla.ls[:, n]
-                - betas[n] * lams[: n + 1]
-                + A @ rhos[:, n]
-                - sigmas_[:, n] * ls[:, n]
+                -nabla.ls[:, pi]
+                - betas[pi] * lams[:, ai + 1]
+                + A @ rhos[:, ai]
+                - sigmas_[ai] * ls[:, pi]
             )
-            / alphas[n]
+            / alphas[pi]
         )
 
-        w = -nabla.betas[:, n - 1] - ls[:, n - 1].T @ lams_[:, n]
-        omegas_ = carry.omegas.at[:, n].set(
-            -rs[:, n].T @ (nabla.rs[:, n] - A.T * lams_[:, n] + alphas[n] * rhos[:, n])
-            - betas[n - 1] * w
+        w = -nabla.betas[pi - 1] - ls[:, pi - 1].T @ lams_[:, ai]
+        omegas_ = carry.omegas.at[ai].set(
+            -rs[:, pi].T
+            @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * rhos[:, ai])
+            - betas[pi - 1] * w
         )
-        rhos_ = rhos.at[:, n - 1].set(
+        rhos_ = rhos.at[:, ai - 1].set(
             (
-                -nabla.rs[:, n]
-                + A.T @ lams_[:, n]
-                - alphas[n] * rhos[:, n]
-                - omegas_[:, n] * rs[:, n]
+                -nabla.rs[:, pi]
+                + A.T @ lams_[:, ai]
+                - alphas[pi] * rhos[:, ai]
+                - omegas_[ai] * rs[:, pi]
             )
-            / betas[n - 1]
+            / betas[pi - 1]
         )
 
         return CarryState(
-            l1s=lams_,
-            l2s=rhos_,
-            l3s=sigmas_,
-            l4s=omegas_,
+            lams=lams_,
+            rhos=rhos_,
+            sigmas=sigmas_,
+            omegas=omegas_,
         )
+
+    jax.debug.print("k={k}, upper = {upper}", k=k, upper=k - 2 + 1)
 
     output: CarryState = jax.lax.fori_loop(
         lower=0,
         upper=k - 2 + 1,  # (+ 1 to include in iteration)
-        fun=body_fun,
+        body_fun=body_fun,
         init_val=CarryState(
             lams=lams,
             rhos=rhos,
@@ -468,38 +487,62 @@ def vjp_backward(
         ),
     )
 
-    t = -nabla.alphas[1] - rs[:, 1].T @ output.rhos[:, 1]
-    output.sigmas = (
-        output.sigmas.at[:, 1].set(
-            -ls[:, 1].T
-            @ (nabla.ls[:, 1] + betas[1] * output.lams[:, 2] - A @ output.rhos[:, 1])
-        )
-        - alphas[:, 1] * t
+    # last iteration steps:
+    ai = 1
+    """adjoint index, 1-based"""
+    pi = 0
+    """primal index, 0-based"""
+
+    # beta[1] * lambda[1+1] might not be defined if len(beta) == 0, in that case we define it to be zero.
+    beta_times_next_lam = jax.lax.cond(
+        pred=len(betas) > 0,
+        true_fun=lambda: betas[pi] * output.lams[:, ai + 1],
+        false_fun=lambda: 0 * output.lams[:, ai + 1],
     )
 
-    output.lams = (
-        output.lams.at[:, 1].set(
-            -nabla.ls[:, 1] - betas[1] * output.lams[:, 2] + A @ output.rhos[:, 1]
+    t = -nabla.alphas[pi] - rs[:, pi].T @ output.rhos[:, ai]
+    sigmas_ = (
+        output.sigmas.at[ai].set(
+            -ls[:, pi].T
+            @ (nabla.ls[:, pi] + beta_times_next_lam - A @ output.rhos[:, ai])
         )
-        / alphas[1]
+        - alphas[pi] * t
     )
 
-    output.omegas = output.omegas.at[:, 1].set(
-        -rs[:, 1].T
-        @ (nabla.rs[:, 1] - A.T @ output.lams[:, 1] + alphas[1] * output.rhos[:, 1])
+    lams_ = (
+        output.lams.at[:, ai].set(
+            -nabla.ls[:, pi]
+            - beta_times_next_lam
+            + A @ output.rhos[:, pi]
+            - ls[:, pi] * sigmas_[ai]
+        )
+        / alphas[pi]
+    )
+
+    omegas_ = output.omegas.at[ai].set(
+        -rs[:, pi].T
+        @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * output.rhos[:, ai])
         - c * nabla.c
     )
 
     kappa = (
-        -nabla.rs[:, 1]
-        + A.T @ output.lams[:, 1]
-        - alphas[1] * output.rhos[:, 1]
-        - output.omegas[:, 1] * rs[:, 1]
+        -nabla.rs[:, pi]
+        + A.T @ lams_[:, ai]
+        - alphas[pi] * output.rhos[:, ai]
+        - omegas_[ai] * rs[:, pi]
     )
 
-    # TODO: convert these lambdas into grads.A and grads.start_vector, by having a look at the differentiated constraints
+    # use kappa and rhos and lambdas to compute grads.A and grads.start_vector
 
-    return output
+    lambda_rs_outer_sum = jnp.einsum("ij, kj -> ik", output.lams[:, 1:], rs)
+    ls_rho_outer_sum = jnp.einsum("ij, kj -> ik", ls, output.rhos[:, 1:])
+
+    gradients = BidiagInput(
+        A=-lambda_rs_outer_sum - ls_rho_outer_sum,
+        start_vector=-c * kappa,
+    )
+
+    return gradients
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -508,8 +551,8 @@ def test_shapes(seed):
         jax.random.PRNGKey(seed), num=5
     )
 
-    n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
+    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
+    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
 
     A = jax.random.normal(key=fill_rng, shape=(n, m))
     A = A.at[0, :].set(0)
@@ -536,75 +579,13 @@ def test_shapes(seed):
     assert result.ls.shape == tangents.ls.shape
 
 
-# @pytest.mark.parametrize("seed", range(30))
-# def test_bidiag_jvp_numeric(seed):
-#     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-#         jax.random.PRNGKey(seed), num=5
-#     )
-#     n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-#     m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-#     A = jax.random.normal(key=fill_rng, shape=(n, m))
-#     d_A = jax.random.normal(key=mask_rng, shape=(n, m))
-
-#     print("Rank:", jnp.linalg.matrix_rank(A))
-
-#     start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-#     d_start_vector = jax.random.normal(key=height_rng, shape=(m,))
-
-#     iterations = min(A.shape[0], A.shape[1])
-
-#     result, tangents = bidiagonalize_jvp(
-#         primals=(np.array(A), np.array(start_vector)),
-#         tangents=(np.array(d_A), np.array(d_start_vector)),
-#         n_total_iterations=iterations,
-#     )
-
-#     h = 0.000001
-#     result_wiggled, _ = bidiagonalize_jvp(
-#         primals=(np.array(A + d_A * h), np.array(start_vector + d_start_vector * h)),
-#         tangents=(np.array(d_A), np.array(d_start_vector)),  # doesn't matter
-#         n_total_iterations=iterations,
-#     )
-
-#     print(f"-- Field: {'c'}".ljust(20), sep="", end="")
-#     assert np.allclose((result_wiggled.c - result.c) / h, tangents.c, atol=1e-2), (
-#         f"c: {(result.c - result_wiggled.c) / h}, {tangents.c}"
-#     )
-#     print(" (OK)")
-
-#     for idx in range(0, result.iterations_finished):
-#         for field in ["rs", "alphas", "ls", "betas"]:
-#             if field == "betas" and idx == result.iterations_finished - 1:
-#                 continue
-#             print(f"-- Field: {field}[{idx}]".ljust(20), sep="", end="")
-#             try:
-#                 result_field = getattr(result, field)
-#                 wiggled_field = getattr(result_wiggled, field)
-#                 tangent_field = getattr(tangents, field)
-
-#                 if field == "rs" or field == "ls":
-#                     aprox = (wiggled_field[:, idx] - result_field[:, idx]) / h
-#                     exact = tangent_field[:, idx]
-#                 else:
-#                     aprox = (wiggled_field[idx] - result_field[idx]) / h
-#                     exact = tangent_field[idx]
-
-#                 assert np.allclose(aprox, exact, atol=1e-2), (
-#                     f"\nApprox: {aprox}, \nExact: {exact}"
-#                 )
-#                 print(" (OK)")
-#             except IndexError:
-#                 print(" (IndexError)")
-#                 continue
-
-
 @pytest.mark.parametrize("seed", range(50))
-def test_bidiag(seed):
+def test_bidiag_properties(seed):
     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
         jax.random.PRNGKey(seed), num=5
     )
-    n = jax.random.randint(key=width_rng, minval=2, maxval=4 + 1, shape=())
-    m = jax.random.randint(key=height_rng, minval=2, maxval=4 + 1, shape=())
+    n = jax.random.randint(key=width_rng, minval=1, maxval=4 + 1, shape=())
+    m = jax.random.randint(key=height_rng, minval=1, maxval=4 + 1, shape=())
     A = jax.random.normal(key=fill_rng, shape=(n, m))  # random tall-or-square matrix
     if jax.random.uniform(key=mask_rng) < 0.4:
         print("Setting first column to zero")
@@ -658,9 +639,8 @@ def test_bidiag_jvp_with_autodiff(seed):
     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
         jax.random.PRNGKey(seed), num=5
     )
-    n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-    # n, m = (3, 3)
+    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
+    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
     A = jax.random.normal(key=fill_rng, shape=(n, m))
     d_A = jax.random.normal(key=height_rng, shape=(n, m))
 
@@ -671,28 +651,21 @@ def test_bidiag_jvp_with_autodiff(seed):
     print("Rank:", jnp.linalg.matrix_rank(A))
 
     start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-    # start_vector = jnp.array([1.0, 0.0, 0.0])
     d_start_vector = jax.random.normal(key=height_rng, shape=(m,))
 
     iterations = int(min(A.shape[0], A.shape[1]))
-    # todo clean up
-    result, tangents = bidiagonalize_jvp(
+
+    _, my_tangent = bidiagonalize_jvp(
         primals=(np.array(A), np.array(start_vector)),
         tangents=(np.array(d_A), np.array(d_start_vector)),
         n_total_iterations=iterations,
     )
 
-    (primal_result, jax_tangent, my_tangent) = jax.jvp(
-        fun=lambda p, t: bidiagonalize_jvp(primals=p, tangents=t, n_total_iterations=3),
-        primals=(
-            (np.array(A), np.array(start_vector)),
-            (np.array(d_A), np.array(d_start_vector)),
-        ),
-        tangents=(
-            (np.array(d_A), np.array(d_start_vector)),
-            (np.array(d_A), np.array(d_start_vector)),
-        ),
-        has_aux=True,
+    _, jax_tangent = jax.jvp(
+        fun=lambda p: bidiagonalize(primals=p, n_total_iterations=iterations),
+        primals=((np.array(A), np.array(start_vector)),),
+        tangents=((np.array(d_A), np.array(d_start_vector)),),
+        has_aux=False,
     )
 
     assert jnp.allclose(jax_tangent.c, my_tangent.c, atol=1e-6), (
@@ -720,8 +693,8 @@ def test_bidiag_agrees_with_jvp(seed):
     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
         jax.random.PRNGKey(seed), num=5
     )
-    n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
+    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
+    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
     A = jax.random.normal(key=fill_rng, shape=(n, m))
     d_A = jax.random.normal(key=mask_rng, shape=(n, m))
 
@@ -760,47 +733,48 @@ def test_bidiag_agrees_with_jvp(seed):
         "iterations_finished values differ"
     )
 
-    # if __name__ == "__main__":
-    #     seed = 1
-    #     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-    #         jax.random.PRNGKey(seed), num=5
-    #     )
-    #     n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    #     m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-    #     A = jax.random.normal(key=fill_rng, shape=(n, m))
-    #     d_A = jax.random.normal(key=mask_rng, shape=(n, m))
 
-    #     print("Rank:", jnp.linalg.matrix_rank(A))
-
-    #     start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-    #     d_start_vector = jax.random.normal(key=height_rng, shape=(m,))
-
-    #     iterations = min(A.shape[0], A.shape[1])
-    #     print(A)
-    #     k = bidiagonalize((A, start_vector), 5)
-    #     _, f = jax.vjp(lambda a: bidiagonalize(a, 5), (A, start_vector))
-    #     f(k)
-
-
-if __name__ == "__main__":
-    seed = 1
-
-    test_bidiag(45)
-
-    # (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-    #     jax.random.PRNGKey(seed), num=5
-    # )
+@pytest.mark.parametrize("seed", range(1))
+def test_bidiag_vjp_agrees_with_jax(seed):
+    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
+        jax.random.PRNGKey(seed), num=5
+    )
+    n = 1
+    m = 1
     # n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-# m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-# n, m = (3, 3)
-# A = jax.random.normal(key=fill_rng, shape=(n, m))
-# d_A = jax.random.normal(key=mask_rng, shape=(n, m))
+    # m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
+    A = jax.random.normal(key=fill_rng, shape=(n, m))
+    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
 
-# output = bidiagonalize()
+    print(f"Matrix A shape: {A.shape}")
 
-# def loss(input: BidiagOutput) -> float:
-#     return input.alphas[0] + input.alphas[1]
+    iterations = int(min(A.shape[0], A.shape[1]))
 
-# grads = jax.grad(
-#     fun=loss,
-# )
+    # Create a random cotangent vector with the same structure as BidiagOutput
+    cotangent = BidiagOutput(
+        c=jax.random.normal(key=mask_rng, shape=()),
+        res=jax.random.normal(key=height_rng, shape=(m,)),
+        rs=jax.random.normal(key=fill_rng, shape=(m, iterations)),
+        ls=jax.random.normal(key=rand_choice_rng, shape=(n, iterations)),
+        alphas=jax.random.normal(key=width_rng, shape=(iterations,)),
+        betas=jax.random.normal(key=mask_rng, shape=(iterations - 1,)),
+    )
+
+    # Get VJP using JAX's automatic differentiation
+    def bidiag_wrapper(primals):
+        return bidiagonalize(primals, int(iterations))
+
+    _, jax_vjp = jax.vjp(bidiag_wrapper, (A, start_vector))
+    jax_grads = jax_vjp(cotangent)
+    # Get VJP using custom implementation
+    _, cache = vjp_forward((A, start_vector), int(iterations))
+
+    custom_grads: BidiagInput = vjp_backward(cache, cotangent)
+
+    # Compare the gradients
+    assert jnp.allclose(jax_grads[0][0], custom_grads.A, atol=1e-6), (
+        "A gradients differ"
+    )
+    assert jnp.allclose(jax_grads[0][1], custom_grads.start_vector, atol=1e-6), (
+        "start_vector gradients differ"
+    )
