@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 from functools import partial
 import typing
 import numpy as np
@@ -10,6 +9,7 @@ from jax.typing import ArrayLike  # type: ignore[import-not-found]
 import jax.numpy as jnp  # type: ignore[import-not-found]
 
 jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_debug_nans", True)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -93,17 +93,16 @@ class BidiagOutput:
         return first_zero_or_len(self.alphas)
 
 
-@partial(jax.jit, static_argnames=("n_total_iterations",))
+@partial(jax.jit, static_argnames=("num_matvecs",))
 def bidiagonalize(
     primals: tuple[ArrayLike, ArrayLike],
-    n_total_iterations: int,
+    num_matvecs: int,
 ) -> BidiagOutput:
-    """hello"""
     A, start_vector = primals
 
     c = 1 / jnp.linalg.norm(start_vector)
 
-    size = n_total_iterations + 1
+    size = num_matvecs + 1
 
     as_ = jnp.zeros((size))
     bs = jnp.zeros((size))
@@ -128,23 +127,22 @@ def bidiagonalize(
         if True:
             t = A @ carry.rs[:, n] - carry.bs[n - 1] * carry.ls[:, n - 1]
 
-            alpha_k = jnp.linalg.norm(t)
             new_alpha, new_l = jax.lax.cond(
-                pred=jnp.allclose(alpha_k, 0, atol=1e-6),  # | jnp.isnan(alpha_k),
+                pred=jnp.allclose(t.T @ t, 0, atol=1e-6),  # | jnp.isnan(alpha_k),
                 true_fun=lambda: (0.0, jnp.zeros_like(t)),
-                false_fun=lambda: (alpha_k, t / alpha_k),
+                false_fun=lambda: (jnp.linalg.norm(t), t / jnp.linalg.norm(t)),
             )
 
             as_ = carry.as_.at[n].set(new_alpha)
             ls = carry.ls.at[:, n].set(new_l)
 
             w = A.T @ ls[:, n] - as_[n] * carry.rs[:, n]
-            beta_k = jnp.linalg.norm(w)
+            # beta_k = jnp.linalg.norm(w)
 
             new_beta, new_r = jax.lax.cond(
-                pred=jnp.allclose(beta_k, 0, atol=1e-6),  # | jnp.isnan(beta_k),
+                pred=jnp.allclose(w.T @ w, 0, atol=1e-6),  # | jnp.isnan(beta_k),
                 true_fun=lambda: (0.0, jnp.zeros_like(w)),
-                false_fun=lambda: (beta_k, w / beta_k),
+                false_fun=lambda: (jnp.linalg.norm(w), w / jnp.linalg.norm(w)),
             )
 
             bs = carry.bs.at[n].set(new_beta)
@@ -157,10 +155,20 @@ def bidiagonalize(
             bs=bs,
         )
 
+    # loop_out = body_fun(
+    #     0,
+    #     CarryState(
+    #         rs=rs,
+    #         ls=ls,
+    #         as_=as_,
+    #         bs=bs,
+    #     ),
+    # )
+
     # Run the loop
     loop_out = jax.lax.fori_loop(
         lower=0,
-        upper=n_total_iterations,
+        upper=num_matvecs,
         body_fun=body_fun,
         init_val=CarryState(
             rs=rs,
@@ -170,7 +178,7 @@ def bidiagonalize(
         ),
     )
 
-    k = n_total_iterations
+    k = num_matvecs
 
     # Create primal output
     primal_output = BidiagOutput(
@@ -184,18 +192,18 @@ def bidiagonalize(
     return primal_output
 
 
-@partial(jax.jit, static_argnames=("n_total_iterations",))
+@partial(jax.jit, static_argnames=("num_matvecs",))
 def bidiagonalize_jvp(
     primals: tuple[ArrayLike, ArrayLike],
     tangents: tuple[ArrayLike, ArrayLike],
-    n_total_iterations: int,
+    num_matvecs: int,
 ) -> tuple[BidiagOutput, BidiagOutput]:
     A, start_vector = primals
     dA, d_start_vector = tangents
 
     c = 1 / jnp.linalg.norm(start_vector)
 
-    size = n_total_iterations + 1
+    size = num_matvecs + 1
 
     as_ = jnp.zeros((size))
     bs = jnp.zeros((size))
@@ -241,23 +249,21 @@ def bidiagonalize_jvp(
         if True:
             t = A @ carry.rs[:, n] - carry.bs[n - 1] * carry.ls[:, n - 1]
 
-            alpha_k = jnp.linalg.norm(t)
             new_alpha, new_l = jax.lax.cond(
-                pred=jnp.allclose(alpha_k, 0, atol=1e-6),  # | jnp.isnan(alpha_k),
+                pred=jnp.allclose(t.T @ t, 0, atol=1e-6),  # | jnp.isnan(alpha_k),
                 true_fun=lambda: (0.0, jnp.zeros_like(t)),
-                false_fun=lambda: (alpha_k, t / alpha_k),
+                false_fun=lambda: (jnp.linalg.norm(t), t / jnp.linalg.norm(t)),
             )
 
             as_ = carry.as_.at[n].set(new_alpha)
             ls = carry.ls.at[:, n].set(new_l)
 
             w = A.T @ ls[:, n] - as_[n] * carry.rs[:, n]
-            beta_k = jnp.linalg.norm(w)
 
             new_beta, new_r = jax.lax.cond(
-                pred=jnp.allclose(beta_k, 0, atol=1e-6),  # | jnp.isnan(beta_k),
+                pred=jnp.allclose(w.T @ w, 0, atol=1e-6),  # | jnp.isnan(beta_k),
                 true_fun=lambda: (0.0, jnp.zeros_like(w)),
-                false_fun=lambda: (beta_k, w / beta_k),
+                false_fun=lambda: (jnp.linalg.norm(w), w / jnp.linalg.norm(w)),
             )
 
             bs = carry.bs.at[n].set(new_beta)
@@ -275,9 +281,9 @@ def bidiagonalize_jvp(
             d_as = carry.d_as.at[n].set(d_alpha_n)
 
             d_l_n = jax.lax.cond(
-                pred=jnp.allclose(alpha_k, 0, atol=1e-6) | jnp.isnan(alpha_k),
+                pred=jnp.allclose(new_alpha, 0, atol=1e-6) | jnp.isnan(new_alpha),
                 true_fun=lambda: jnp.zeros_like(ls[:, 0]),
-                false_fun=lambda: (d_t - d_alpha_n * ls[:, n]) / alpha_k,
+                false_fun=lambda: (d_t - d_alpha_n * ls[:, n]) / new_alpha,
             )
             d_ls = carry.d_ls.at[:, n].set(d_l_n)
 
@@ -291,9 +297,9 @@ def bidiagonalize_jvp(
             d_bs = carry.d_bs.at[n].set(d_beta_n)
 
             d_r_np1 = jax.lax.cond(
-                pred=jnp.allclose(beta_k, 0, atol=1e-6) | jnp.isnan(beta_k),
+                pred=jnp.allclose(new_beta, 0, atol=1e-6) | jnp.isnan(new_beta),
                 true_fun=lambda: jnp.zeros_like(rs[:, 0]),
-                false_fun=lambda: (d_w - d_beta_n * rs[:, n + 1]) / beta_k,
+                false_fun=lambda: (d_w - d_beta_n * rs[:, n + 1]) / new_beta,
             )
             d_rs = carry.d_rs.at[:, n + 1].set(d_r_np1)
 
@@ -311,7 +317,7 @@ def bidiagonalize_jvp(
     # Run the loop
     loop_out = jax.lax.fori_loop(
         lower=0,
-        upper=n_total_iterations,
+        upper=num_matvecs,
         body_fun=body_fun,
         init_val=CarryState(
             rs=rs,
@@ -330,7 +336,7 @@ def bidiagonalize_jvp(
         start_vector @ start_vector * jnp.linalg.norm(start_vector)
     )
 
-    k = n_total_iterations
+    k = num_matvecs
 
     d_res = (
         A.T @ loop_out.d_ls[:, k]
@@ -368,181 +374,205 @@ BidiagCache = typing.NamedTuple(
         ("primal", BidiagOutput),
         ("A", ArrayLike),
         ("start_vector", ArrayLike),
-        ("n_total_iterations", int),
     ],
 )
 
 
-def vjp_forward(primals, n_total_iterations) -> tuple[BidiagOutput, BidiagCache]:
-    primal = bidiagonalize(primals, n_total_iterations)
-    cache = BidiagCache(
-        primal=primal,
-        A=primals[0],
-        start_vector=primals[1],
-        n_total_iterations=n_total_iterations,
-    )
-    return primal, cache
+def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
+    def _bidiag_vjp_fwd(primals) -> tuple[BidiagOutput, BidiagCache]:
+        primal = bidiagonalize(primals, num_matvecs)
+        cache = BidiagCache(
+            primal=primal,
+            A=primals[0],
+            start_vector=primals[1],
+        )
+        return primal, cache
 
+    def _bidiag_vjp_bwd(
+        cache: BidiagCache,
+        nabla: BidiagOutput,
+    ) -> BidiagInput:
+        # Unpack primal variables from cache. These are 0-indexed.
+        betas = cache.primal.betas
+        jax.debug.print("betas: {}", betas)
+        alphas = cache.primal.alphas
+        jax.debug.print("alphas: {}", alphas)
+        rs = cache.primal.rs
+        ls = cache.primal.ls
+        jax.debug.print("ls, rs: {}, {}", ls, rs)
+        c = cache.primal.c
+        A = cache.A
+        jax.debug.print("A: {}", A)
+        (n, m) = cache.A.shape
 
-def vjp_backward(
-    cache: BidiagCache,
-    nabla: BidiagOutput,
-) -> BidiagInput:
-    k = cache.n_total_iterations
-    # ...
+        k = num_matvecs
 
-    # Unpack primal variables from cache. These are 0-indexed.
-    betas = cache.primal.betas
-    jax.debug.print("betas: {}", betas)
-    alphas = cache.primal.alphas
-    jax.debug.print("alphas: {}", alphas)
-    rs = cache.primal.rs
-    ls = cache.primal.ls
-    jax.debug.print("ls, rs: {}, {}", ls, rs)
-    c = cache.primal.c
-    A = cache.A
-    jax.debug.print("A: {}", A)
-    (n, m) = cache.A.shape
+        # Initialize adjoint variables.
+        # We use 1-indexing for all of these to follow the math a bit more easily.
+        lams = jnp.zeros((n, 1 + k + 1))  # lambdas
+        rhos = jnp.zeros((m, 1 + k))  # rhos
+        rhos = rhos.at[:, k].set(-nabla.res)
+        sigmas = jnp.zeros_like(alphas)
+        omegas = jnp.zeros_like(alphas)
 
-    # Initialize adjoint variables.
-    # We use 1-indexing for all of these to follow the math a bit more easily.
-    lams = jnp.zeros((n, 1 + k + 1))  # lambdas
-    rhos = jnp.zeros((m, 1 + k))  # rhos
-    rhos = rhos.at[:, k].set(-nabla.res)
-    sigmas = jnp.zeros_like(alphas)
-    omegas = jnp.zeros_like(betas)
+        CarryState = typing.NamedTuple(
+            "CarryState",
+            [
+                ("lams", ArrayLike),
+                ("rhos", ArrayLike),
+                ("sigmas", ArrayLike),
+                ("omegas", ArrayLike),
+            ],
+        )
 
-    CarryState = typing.NamedTuple(
-        "CarryState",
-        [
-            ("lams", ArrayLike),
-            ("rhos", ArrayLike),
-            ("sigmas", ArrayLike),
-            ("omegas", ArrayLike),
-        ],
-    )
+        def body_fun(i: int, carry: CarryState):
+            jax.debug.print("entered loop with i = {i}", i=i)
+            # 'i' will go from 0 to k-2 (inclusive)
+            # we subtract i from k to go from k to 2 (inclusive)
+            ai = k - i
+            """adjoint index, 1-based"""
+            pi = k - i - 1
+            """primal index, 0-based"""
 
-    def body_fun(i: int, carry: CarryState):
-        jax.debug.print("entered loop with i = {i}", i=i)
-        # 'i' will go from 0 to k-2 (inclusive)
-        # we subtract i from k to go from k to 2 (inclusive)
-        ai = k - i
+            lams = carry.lams
+            rhos = carry.rhos
+
+            t = -nabla.alphas[pi] - rs[:, pi].T @ rhos[:, ai]
+            sigmas_ = carry.sigmas.at[ai].set(
+                -ls[:, pi].T
+                @ (nabla.ls[:, pi] + betas[pi] * lams[:, ai + 1] - A @ rhos[:, ai])
+                - alphas[pi] * t
+            )
+            lams_ = lams.at[:, ai].set(
+                (
+                    -nabla.ls[:, pi]
+                    - betas[pi] * lams[:, ai + 1]
+                    + A @ rhos[:, ai]
+                    - sigmas_[ai] * ls[:, pi]
+                )
+                / alphas[pi]
+            )
+
+            w = -nabla.betas[pi - 1] - ls[:, pi - 1].T @ lams_[:, ai]
+            omegas_ = carry.omegas.at[ai].set(
+                -rs[:, pi].T
+                @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * rhos[:, ai])
+                - betas[pi - 1] * w
+            )
+            rhos_ = rhos.at[:, ai - 1].set(
+                (
+                    -nabla.rs[:, pi]
+                    + A.T @ lams_[:, ai]
+                    - alphas[pi] * rhos[:, ai]
+                    - omegas_[ai] * rs[:, pi]
+                )
+                / betas[pi - 1]
+            )
+
+            return CarryState(
+                lams=lams_,
+                rhos=rhos_,
+                sigmas=sigmas_,
+                omegas=omegas_,
+            )
+
+        jax.debug.print("k={k}, upper = {upper}", k=k, upper=k - 2 + 1)
+
+        if num_matvecs >= 2:
+            output: CarryState = jax.lax.fori_loop(
+                lower=0,
+                upper=k - 2 + 1,  # (+ 1 to include in iteration)
+                body_fun=body_fun,
+                init_val=CarryState(
+                    lams=lams,
+                    rhos=rhos,
+                    sigmas=sigmas,
+                    omegas=omegas,
+                ),
+            )
+        else:
+            output: CarryState = CarryState(
+                lams=lams,
+                rhos=rhos,
+                sigmas=sigmas,
+                omegas=omegas,
+            )
+
+        # last iteration steps:
+        ai = 1
         """adjoint index, 1-based"""
-        pi = k - i - 1
+        pi = 0
         """primal index, 0-based"""
 
-        lams = carry.lams
-        rhos = carry.rhos
+        if num_matvecs >= 2:  # beta is defined from num_matvecs >= 2
+            beta_times_next_lam = betas[pi] * output.lams[:, ai + 1]
+        else:
+            beta_times_next_lam = 0 * output.lams[:, ai + 1]
 
-        t = -nabla.alphas[pi] - rs[:, pi].T @ rhos[:, ai]
-        sigmas_ = carry.sigmas.at[ai].set(
-            -ls[:, pi].T
-            @ (nabla.ls[:, pi] + betas[pi] * lams[:, ai + 1] - A @ rhos[:, ai])
+        t = -nabla.alphas[pi] - rs[:, pi].T @ output.rhos[:, ai]
+        sigmas_ = (
+            output.sigmas.at[ai].set(
+                -ls[:, pi].T
+                @ (nabla.ls[:, pi] + beta_times_next_lam - A @ output.rhos[:, ai])
+            )
             - alphas[pi] * t
         )
-        lams_ = lams.at[:, ai].set(
-            (
+
+        lams_ = (
+            output.lams.at[:, ai].set(
                 -nabla.ls[:, pi]
-                - betas[pi] * lams[:, ai + 1]
-                + A @ rhos[:, ai]
-                - sigmas_[ai] * ls[:, pi]
+                - beta_times_next_lam
+                + A @ output.rhos[:, pi]
+                - ls[:, pi] * sigmas_[ai]
             )
             / alphas[pi]
         )
 
-        w = -nabla.betas[pi - 1] - ls[:, pi - 1].T @ lams_[:, ai]
-        omegas_ = carry.omegas.at[ai].set(
+        omegas_ = output.omegas.at[ai].set(
             -rs[:, pi].T
-            @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * rhos[:, ai])
-            - betas[pi - 1] * w
-        )
-        rhos_ = rhos.at[:, ai - 1].set(
-            (
-                -nabla.rs[:, pi]
-                + A.T @ lams_[:, ai]
-                - alphas[pi] * rhos[:, ai]
-                - omegas_[ai] * rs[:, pi]
-            )
-            / betas[pi - 1]
+            @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * output.rhos[:, ai])
+            - c * nabla.c
         )
 
-        return CarryState(
-            lams=lams_,
-            rhos=rhos_,
-            sigmas=sigmas_,
-            omegas=omegas_,
+        kappa = (
+            -nabla.rs[:, pi]
+            + A.T @ lams_[:, ai]
+            - alphas[pi] * output.rhos[:, ai]
+            - omegas_[ai] * rs[:, pi]
         )
 
-    jax.debug.print("k={k}, upper = {upper}", k=k, upper=k - 2 + 1)
+        jax.debug.print("lams: {}", lams_)
+        jax.debug.print("omegas: {}", omegas_)
+        jax.debug.print("sigmas: {}", sigmas_)
+        jax.debug.print("rhos: {}", output.rhos)
+        jax.debug.print("kappa: {}", kappa)
 
-    output: CarryState = jax.lax.fori_loop(
-        lower=0,
-        upper=k - 2 + 1,  # (+ 1 to include in iteration)
-        body_fun=body_fun,
-        init_val=CarryState(
-            lams=lams,
-            rhos=rhos,
-            sigmas=sigmas,
-            omegas=omegas,
-        ),
-    )
+        # use kappa and rhos and lambdas to compute grads.A and grads.start_vector
 
-    # last iteration steps:
-    ai = 1
-    """adjoint index, 1-based"""
-    pi = 0
-    """primal index, 0-based"""
+        lambda_rs_outer_sum = jnp.einsum("ij, kj -> ik", output.lams[:, 1:], rs)
+        ls_rho_outer_sum = jnp.einsum("ij, kj -> ik", ls, output.rhos[:, 1:])
 
-    # beta[1] * lambda[1+1] might not be defined if len(beta) == 0, in that case we define it to be zero.
-    beta_times_next_lam = jax.lax.cond(
-        pred=len(betas) > 0,
-        true_fun=lambda: betas[pi] * output.lams[:, ai + 1],
-        false_fun=lambda: 0 * output.lams[:, ai + 1],
-    )
-
-    t = -nabla.alphas[pi] - rs[:, pi].T @ output.rhos[:, ai]
-    sigmas_ = (
-        output.sigmas.at[ai].set(
-            -ls[:, pi].T
-            @ (nabla.ls[:, pi] + beta_times_next_lam - A @ output.rhos[:, ai])
+        gradients = BidiagInput(
+            A=-lambda_rs_outer_sum - ls_rho_outer_sum,
+            start_vector=-c * kappa,
         )
-        - alphas[pi] * t
-    )
 
-    lams_ = (
-        output.lams.at[:, ai].set(
-            -nabla.ls[:, pi]
-            - beta_times_next_lam
-            + A @ output.rhos[:, pi]
-            - ls[:, pi] * sigmas_[ai]
+        return ((gradients.A, gradients.start_vector),)
+
+    if custom_vjp:
+        _bidiagonalize = jax.custom_vjp(
+            lambda primals: bidiagonalize(primals=primals, num_matvecs=num_matvecs),
+            nondiff_argnums=(),
         )
-        / alphas[pi]
-    )
-
-    omegas_ = output.omegas.at[ai].set(
-        -rs[:, pi].T
-        @ (nabla.rs[:, pi] - A.T @ lams_[:, ai] + alphas[pi] * output.rhos[:, ai])
-        - c * nabla.c
-    )
-
-    kappa = (
-        -nabla.rs[:, pi]
-        + A.T @ lams_[:, ai]
-        - alphas[pi] * output.rhos[:, ai]
-        - omegas_[ai] * rs[:, pi]
-    )
-
-    # use kappa and rhos and lambdas to compute grads.A and grads.start_vector
-
-    lambda_rs_outer_sum = jnp.einsum("ij, kj -> ik", output.lams[:, 1:], rs)
-    ls_rho_outer_sum = jnp.einsum("ij, kj -> ik", ls, output.rhos[:, 1:])
-
-    gradients = BidiagInput(
-        A=-lambda_rs_outer_sum - ls_rho_outer_sum,
-        start_vector=-c * kappa,
-    )
-
-    return gradients
+        _bidiagonalize.defvjp(
+            _bidiag_vjp_fwd,
+            _bidiag_vjp_bwd,
+        )
+    else:
+        _bidiagonalize = lambda primals: bidiagonalize(
+            primals=primals, num_matvecs=num_matvecs
+        )
+    return _bidiagonalize
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -558,24 +588,22 @@ def test_shapes(seed):
     A = A.at[0, :].set(0)
     start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
 
-    n_total_iterations = int(
-        jax.random.randint(key=mask_rng, minval=2, maxval=10, shape=())
-    )
+    num_matvecs = int(jax.random.randint(key=mask_rng, minval=2, maxval=10, shape=()))
 
     result, tangents = bidiagonalize_jvp(
-        (A, start_vector), (A, start_vector), n_total_iterations
+        (A, start_vector), (A, start_vector), num_matvecs
     )
     assert result.c.shape == ()
     assert result.c.shape == tangents.c.shape
-    assert result.alphas.shape == (n_total_iterations,)
+    assert result.alphas.shape == (num_matvecs,)
     assert result.alphas.shape == tangents.alphas.shape
-    assert result.betas.shape == (n_total_iterations - 1,)
+    assert result.betas.shape == (num_matvecs - 1,)
     assert result.betas.shape == tangents.betas.shape
     assert result.res.shape == (m,)
     assert result.res.shape == tangents.res.shape
-    assert result.rs.shape == (m, n_total_iterations)
+    assert result.rs.shape == (m, num_matvecs)
     assert result.rs.shape == tangents.rs.shape
-    assert result.ls.shape == (n, n_total_iterations)
+    assert result.ls.shape == (n, num_matvecs)
     assert result.ls.shape == tangents.ls.shape
 
 
@@ -597,7 +625,7 @@ def test_bidiag_properties(seed):
     result, _ = bidiagonalize_jvp(
         (A, start_vector),
         (A, start_vector),
-        n_total_iterations=min(int(n), int(m)),
+        num_matvecs=min(int(n), int(m)),
     )
 
     result: BidiagOutput = result
@@ -658,11 +686,11 @@ def test_bidiag_jvp_with_autodiff(seed):
     _, my_tangent = bidiagonalize_jvp(
         primals=(np.array(A), np.array(start_vector)),
         tangents=(np.array(d_A), np.array(d_start_vector)),
-        n_total_iterations=iterations,
+        num_matvecs=iterations,
     )
 
     _, jax_tangent = jax.jvp(
-        fun=lambda p: bidiagonalize(primals=p, n_total_iterations=iterations),
+        fun=lambda p: bidiagonalize(primals=p, num_matvecs=iterations),
         primals=((np.array(A), np.array(start_vector)),),
         tangents=((np.array(d_A), np.array(d_start_vector)),),
         has_aux=False,
@@ -706,14 +734,14 @@ def test_bidiag_agrees_with_jvp(seed):
     # Get output from bidiagonalize
     bidiag_output = bidiagonalize(
         primals=(np.array(A), np.array(start_vector)),
-        n_total_iterations=iterations,
+        num_matvecs=iterations,
     )
 
     # Get output from bidiagonalize_jvp
     jvp_output, _ = bidiagonalize_jvp(
         primals=(np.array(A), np.array(start_vector)),
         tangents=(np.array(d_A), np.array(d_start_vector)),
-        n_total_iterations=iterations,
+        num_matvecs=iterations,
     )
 
     # Compare all fields
@@ -744,37 +772,62 @@ def test_bidiag_vjp_agrees_with_jax(seed):
     # n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
     # m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
     A = jax.random.normal(key=fill_rng, shape=(n, m))
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
+    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,)) + 1
 
     print(f"Matrix A shape: {A.shape}")
+    print(f"A: {A}")
 
-    iterations = int(min(A.shape[0], A.shape[1]))
+    matvec_num = int(min(A.shape[0], A.shape[1]))
 
     # Create a random cotangent vector with the same structure as BidiagOutput
-    cotangent = BidiagOutput(
-        c=jax.random.normal(key=mask_rng, shape=()),
-        res=jax.random.normal(key=height_rng, shape=(m,)),
-        rs=jax.random.normal(key=fill_rng, shape=(m, iterations)),
-        ls=jax.random.normal(key=rand_choice_rng, shape=(n, iterations)),
-        alphas=jax.random.normal(key=width_rng, shape=(iterations,)),
-        betas=jax.random.normal(key=mask_rng, shape=(iterations - 1,)),
+    # cotangent = BidiagOutput(
+    #     c=jax.random.normal(key=mask_rng, shape=()),
+    #     res=jax.random.normal(key=height_rng, shape=(m,)),
+    #     rs=jax.random.normal(key=fill_rng, shape=(m, iterations)),
+    #     ls=jax.random.normal(key=rand_choice_rng, shape=(n, iterations)),
+    #     alphas=jax.random.normal(key=width_rng, shape=(iterations,)),
+    #     betas=jax.random.normal(key=mask_rng, shape=(iterations - 1,)),
+    # )
+
+    def loss(input: BidiagOutput) -> float:
+        return input.alphas[0]
+
+    decompo = bidiagonalize((A, start_vector), int(matvec_num))
+
+    # get gradient of loss
+    grad_fn = jax.grad(loss)
+    cotangent = grad_fn(decompo)
+    # print("cotangent", cotangent)
+
+    # from jax import make_jaxpr
+    # If grad_fn(x) gives you trouble, you can inspect the computation as follows:
+    # grad_fn = jax.jit(lambda p: bidiagonalize(p, int(matvec_num)))
+    # print("jaxprx", make_jaxpr(grad_fn)((A, start_vector)))
+
+    primal, jax_vjp = jax.vjp(
+        lambda p: bidiagonalize(p, int(matvec_num)), (A, start_vector)
     )
-
-    # Get VJP using JAX's automatic differentiation
-    def bidiag_wrapper(primals):
-        return bidiagonalize(primals, int(iterations))
-
-    _, jax_vjp = jax.vjp(bidiag_wrapper, (A, start_vector))
     jax_grads = jax_vjp(cotangent)
-    # Get VJP using custom implementation
-    _, cache = vjp_forward((A, start_vector), int(iterations))
 
-    custom_grads: BidiagInput = vjp_backward(cache, cotangent)
+    # print("primal", primal)
 
-    # Compare the gradients
-    assert jnp.allclose(jax_grads[0][0], custom_grads.A, atol=1e-6), (
-        "A gradients differ"
+    _, custom_vjp = jax.vjp(
+        bidiagonalize_vjpable(int(matvec_num), custom_vjp=True), (A, start_vector)
     )
-    assert jnp.allclose(jax_grads[0][1], custom_grads.start_vector, atol=1e-6), (
-        "start_vector gradients differ"
-    )
+    custom_grads = custom_vjp(cotangent)
+
+    # print(bidiagonalize((A, start_vector), int(matvec_num)))
+
+    print("A grad:", jax_grads[0][0])
+    print("custom A grad", custom_grads[0][0])
+    print("start vec grad:", jax_grads[0][1])
+    print("custom start vec grad:", custom_grads[0][1])
+    assert False
+
+    # # Compare the gradients
+    # assert jnp.allclose(jax_grads[0][0], custom_grads[0][0], atol=1e-6), (
+    #     "A gradients differ"
+    # )
+    # assert jnp.allclose(jax_grads[0][1], custom_grads[0][1], atol=1e-6), (
+    #     "start_vector gradients differ"
+    # )
