@@ -1,4 +1,4 @@
-from tests.test_bidiag_JVP_jax import BidiagOutput, bidiagonalize_jvp
+from tests.test_bidiag_JVP_and_VJP_jax import BidiagOutput, bidiagonalize_jvp
 from test_bidiag_JVP_numpy import bidiagonalize_jvp as bidiagonalize_jvp_npy
 
 import jax

@@ -399,10 +399,11 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         jax.debug.print("alphas: {}", alphas)
         rs = cache.primal.rs
         ls = cache.primal.ls
-        jax.debug.print("ls, rs: {}, {}", ls, rs)
+        jax.debug.print("ls, rs: \n{}, \n{}", ls, rs)
         c = cache.primal.c
         A = cache.A
         jax.debug.print("c: {}", c)
+        jax.debug.print("res: {}", cache.primal.res)
         jax.debug.print("A: {}", A)
         (n, m) = cache.A.shape
 
@@ -413,8 +414,8 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         lams = jnp.zeros((n, 1 + k + 1))  # lambdas
         rhos = jnp.zeros((m, 1 + k))  # rhos
         rhos = rhos.at[:, k].set(-nabla.res)
-        sigmas = jnp.zeros(len(alphas) + 1)
-        omegas = jnp.zeros(len(alphas) + 1)
+        sigmas = jnp.zeros(k + 1)
+        omegas = jnp.zeros(k + 1)
 
         jax.debug.print("rhos___: {}", rhos)
 
@@ -491,7 +492,7 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
 
         jax.debug.print("k={k}, upper = {upper}", k=k, upper=k - 2 + 1)
 
-        if len(betas) > 0:
+        if num_matvecs > 1:
             output: CarryState = jax.lax.fori_loop(
                 lower=0,
                 upper=k - 2 + 1,  # (+ 1 to include in iteration)
@@ -530,8 +531,7 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         """primal index, 0-based"""
 
         if (
-            # m >= 2 and n >= 2
-            len(betas) > 0
+            num_matvecs > 1
         ):  # beta is defined from num_matvecs >= 2 # TODO this part is suspicious to me
             beta_times_next_lam = betas[pi] * output.lams[:, ai + 1]
         else:
@@ -796,22 +796,20 @@ def test_bidiag_agrees_with_jvp(seed):
     )
 
 
-@pytest.mark.parametrize("seed", range(1))
+@pytest.mark.parametrize("seed", range(30))
 def test_bidiag_vjp_agrees_with_jax(seed):
     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
         jax.random.PRNGKey(seed), num=5
     )
-    n = 2
-    m = 2
-    # n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    # m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-    A = jax.random.normal(key=fill_rng, shape=(n, m)) * 0 + 2.5
-    start_vector = -jax.random.normal(key=rand_choice_rng, shape=(m,)) * 0 - 0.5
+    n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
+    m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
+    A = jax.random.normal(key=fill_rng, shape=(n, m))
+    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
 
     print(f"Matrix A shape: {A.shape}")
     print(f"A: {A}")
 
-    matvec_num = 2  # int(min(A.shape[0], A.shape[1]))
+    matvec_num = int(jax.random.randint(key=fill_rng, minval=1, maxval=8, shape=()))
 
     # Create a random cotangent vector with the same structure as BidiagOutput
     cotangent = BidiagOutput(
@@ -849,25 +847,20 @@ def test_bidiag_vjp_agrees_with_jax(seed):
     )
     jax_grads = jax_vjp(cotangent)
 
-    # print("primal", primal)
-
     _, custom_vjp = jax.vjp(
         bidiagonalize_vjpable(int(matvec_num), custom_vjp=True), (A, start_vector)
     )
     custom_grads = custom_vjp(cotangent)
 
-    # print(bidiagonalize((A, start_vector), int(matvec_num)))
-
     print("A grad:", jax_grads[0][0])
     print("custom A grad", custom_grads[0][0])
     print("start vec grad:", jax_grads[0][1])
     print("custom start vec grad:", custom_grads[0][1])
-    assert False
 
-    # # Compare the gradients
-    # assert jnp.allclose(jax_grads[0][0], custom_grads[0][0], atol=1e-6), (
-    #     "A gradients differ"
-    # )
-    # assert jnp.allclose(jax_grads[0][1], custom_grads[0][1], atol=1e-6), (
-    #     "start_vector gradients differ"
-    # )
+    # Compare the gradients
+    assert jnp.allclose(jax_grads[0][0], custom_grads[0][0], atol=1e-6), (
+        "A gradients differ"
+    )
+    assert jnp.allclose(jax_grads[0][1], custom_grads[0][1], atol=1e-6), (
+        "start_vector gradients differ"
+    )
