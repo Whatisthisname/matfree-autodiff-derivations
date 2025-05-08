@@ -12,9 +12,9 @@ from tests.test_bidiag_JVP_and_VJP_jax import (
 
 
 def benchmark_bidiag_gradients(
-    matvec_nums=[2, 4, 8, 16],
-    matrix_sizes=[16, 32, 64, 128],
-    repeats=3,
+    matvec_nums,
+    matrix_sizes,
+    repeats=10,
 ):
     jax_times = np.zeros((len(matrix_sizes), len(matvec_nums)))
     custom_times = np.zeros((len(matrix_sizes), len(matvec_nums)))
@@ -24,11 +24,40 @@ def benchmark_bidiag_gradients(
 
     for i, size in enumerate(matrix_sizes):
         for j, matvec_num in enumerate(matvec_nums):
-            for _ in range(repeats):
-                key = jax.random.PRNGKey(i * 1000 + j)
+            # Create and compile JAX VJP function
+            key = jax.random.PRNGKey(0)
+            A = jax.random.normal(key, shape=(size, size))
+            start_vector = jax.random.normal(key, shape=(size,))
+            cotangent = BidiagOutput(
+                c=jax.random.normal(key, shape=()),
+                res=jax.random.normal(key, shape=(size,)),
+                rs=jax.random.normal(key, shape=(size, matvec_num)),
+                ls=jax.random.normal(key, shape=(size, matvec_num)),
+                alphas=jax.random.normal(key, shape=(matvec_num,)),
+                betas=jax.random.normal(key, shape=(matvec_num - 1,)),
+            )
+
+            _, jax_vjp_fn = jax.vjp(
+                lambda p: bidiagonalize(p, matvec_num), (A, start_vector)
+            )
+
+            # Compile
+            jax_vjp_fn = jax.jit(jax_vjp_fn)
+            jax_vjp_fn(cotangent)
+
+            # Create and compile custom VJP function
+            _, custom_vjp_fn = jax.vjp(
+                bidiagonalize_vjpable(matvec_num, custom_vjp=True),
+                (A, start_vector),
+            )
+            # Compile
+            custom_vjp_fn(cotangent)
+
+            # Time repeats with different random inputs
+            for r in range(repeats):
+                key = jax.random.PRNGKey(r)
                 A = jax.random.normal(key, shape=(size, size))
                 start_vector = jax.random.normal(key, shape=(size,))
-
                 cotangent = BidiagOutput(
                     c=jax.random.normal(key, shape=()),
                     res=jax.random.normal(key, shape=(size,)),
@@ -38,19 +67,12 @@ def benchmark_bidiag_gradients(
                     betas=jax.random.normal(key, shape=(matvec_num - 1,)),
                 )
 
-                # JAX VJP
-                _, jax_vjp_fn = jax.vjp(
-                    lambda p: bidiagonalize(p, matvec_num), (A, start_vector)
-                )
+                # Time JAX VJP
                 start_time = time.time()
                 jax_vjp_fn(cotangent)
                 jax_times[i, j] += time.time() - start_time
 
-                # Custom VJP
-                _, custom_vjp_fn = jax.vjp(
-                    bidiagonalize_vjpable(matvec_num, custom_vjp=True),
-                    (A, start_vector),
-                )
+                # Time custom VJP
                 start_time = time.time()
                 custom_vjp_fn(cotangent)
                 custom_times[i, j] += time.time() - start_time
@@ -67,20 +89,35 @@ def benchmark_bidiag_gradients(
 def plot_benchmark_results(matrix_sizes, matvec_nums, jax_times, custom_times):
     import matplotlib.pyplot as plt
 
-    for i, size in enumerate(matrix_sizes):
-        plt.plot(matvec_nums, jax_times[i], label=f"JAX VJP (n={size})", linestyle="--")
-        plt.plot(
-            matvec_nums, custom_times[i], label=f"Custom VJP (n={size})", linestyle="-"
-        )
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-    plt.xlabel("matvec_num (iterations)")
-    plt.ylabel("Gradient runtime (seconds)")
-    plt.title("Gradient VJP Runtime Scaling")
-    plt.legend()
-    plt.grid(True)
+    # Plot scaling with matvec_nums (using first matrix size)
+    ax1.plot(matvec_nums, jax_times[0], label="JAX VJP", linestyle="--")
+    ax1.plot(matvec_nums, custom_times[0], label="Custom VJP", linestyle="-")
+    ax1.set_xlabel("Number of iterations")
+    ax1.set_ylabel("Gradient runtime (seconds)")
+    ax1.set_yscale("log")
+    ax1.set_title(f"Scaling with iterations\n(n={matrix_sizes[0]})")
+    ax1.legend()
+    ax1.grid(True)
+
+    # Plot scaling with matrix size (using first matvec_num)
+    ax2.plot(matrix_sizes, jax_times[:, 0], label="JAX VJP", linestyle="--")
+    ax2.plot(matrix_sizes, custom_times[:, 0], label="Custom VJP", linestyle="-")
+    ax2.set_xlabel("Matrix dimension n")
+    ax2.set_ylabel("Gradient runtime (seconds)")
+    ax2.set_yscale("log")
+    ax2.set_title(f"Scaling with matrix size\n(iterations={matvec_nums[0]})")
+    ax2.legend()
+    ax2.grid(True)
+
     plt.tight_layout()
     plt.show()
 
 
-matrix_sizes, matvec_nums, jax_times, custom_times = benchmark_bidiag_gradients()
+matrix_sizes, matvec_nums, jax_times, custom_times = benchmark_bidiag_gradients(
+    matvec_nums=[100],
+    matrix_sizes=np.linspace(100, 5000, 10).astype(int),
+)
 plot_benchmark_results(matrix_sizes, matvec_nums, jax_times, custom_times)

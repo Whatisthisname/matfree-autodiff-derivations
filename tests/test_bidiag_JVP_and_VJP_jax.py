@@ -9,7 +9,7 @@ from jax.typing import ArrayLike  # type: ignore[import-not-found]
 import jax.numpy as jnp  # type: ignore[import-not-found]
 
 jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_debug_nans", True)
+# jax.config.update("jax_debug_nans", True)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -243,7 +243,6 @@ def bidiagonalize_jvp(
 
     def body_fun(i, carry: CarryState) -> CarryState:
         n = i + 1
-        jax.debug.print("Iteration {n}", n=n)
 
         # Forward pass step
         if True:
@@ -379,6 +378,7 @@ BidiagCache = typing.NamedTuple(
 
 
 def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
+    @jax.jit
     def _bidiag_vjp_fwd(primals) -> tuple[BidiagOutput, BidiagCache]:
         primal = bidiagonalize(primals, num_matvecs)
         cache = BidiagCache(
@@ -388,23 +388,18 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         )
         return primal, cache
 
+    @jax.jit
     def _bidiag_vjp_bwd(
         cache: BidiagCache,
         nabla: BidiagOutput,
     ) -> BidiagInput:
         # Unpack primal variables from cache. These are 0-indexed.
         betas = cache.primal.betas
-        jax.debug.print("betas: {}", betas)
         alphas = cache.primal.alphas
-        jax.debug.print("alphas: {}", alphas)
         rs = cache.primal.rs
         ls = cache.primal.ls
-        jax.debug.print("ls, rs: \n{}, \n{}", ls, rs)
         c = cache.primal.c
         A = cache.A
-        jax.debug.print("c: {}", c)
-        jax.debug.print("res: {}", cache.primal.res)
-        jax.debug.print("A: {}", A)
         (n, m) = cache.A.shape
 
         k = num_matvecs
@@ -417,8 +412,6 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         sigmas = jnp.zeros(k + 1)
         omegas = jnp.zeros(k + 1)
 
-        jax.debug.print("rhos___: {}", rhos)
-
         CarryState = typing.NamedTuple(
             "CarryState",
             [
@@ -430,7 +423,6 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         )
 
         def body_fun(i: int, carry: CarryState):
-            jax.debug.print("entered loop with i = {i}", i=i)
             # 'i' will go from 0 to k-2 (inclusive)
             # we subtract i from k to go from k to 2 (inclusive)
             ai = k - i
@@ -461,8 +453,6 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
             )
             lams_ = lams.at[:, ai].set(divided_lambda)
 
-            jax.debug.print("lams in loop: {}", lams_)
-
             w = -nabla.betas[pi - 1] - ls[:, pi - 1].T @ lams_[:, ai]
             omegas_ = carry.omegas.at[ai].set(
                 -rs[:, pi].T
@@ -489,8 +479,6 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
                 sigmas=sigmas_,
                 omegas=omegas_,
             )
-
-        jax.debug.print("k={k}, upper = {upper}", k=k, upper=k - 2 + 1)
 
         if num_matvecs > 1:
             output: CarryState = jax.lax.fori_loop(
@@ -568,23 +556,10 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
             - omegas_[ai] * rs[:, pi]
         )
 
-        jax.debug.print("")
-        jax.debug.print("lams: {}", lams_)
-        jax.debug.print("rhos: {}", output.rhos)
-        jax.debug.print("omegas: {}", omegas_)
-        jax.debug.print("sigmas: {}", sigmas_)
-        jax.debug.print("kappa: {}", kappa)
-        jax.debug.print("")
-
         # use kappa and rhos and lambdas to compute grads.A and grads.start_vector
 
         lambda_rs_outer_sum = jnp.einsum("ij, kj -> ik", lams_[:, 1:-1], rs)
         ls_rho_outer_sum = jnp.einsum("ij, kj -> ik", ls, output.rhos[:, 1:])
-
-        # jax.debug.print("lams 1:{}", lams_[:, 1:])
-        # jax.debug.print("lambda_rs_outer_sum {}", lambda_rs_outer_sum)
-        # jax.debug.print("ls_rho_outer_sum {}", ls_rho_outer_sum)
-        # jax.debug.print("")
 
         gradients = BidiagInput(
             A=-lambda_rs_outer_sum - ls_rho_outer_sum,
@@ -606,7 +581,7 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
         _bidiagonalize = lambda primals: bidiagonalize(
             primals=primals, num_matvecs=num_matvecs
         )
-    return _bidiagonalize
+    return jax.jit(_bidiagonalize)
 
 
 @pytest.mark.parametrize("seed", range(5))

@@ -1,11 +1,15 @@
-A repository where I collect my experiments with JAX.
+This repository holds various random JAX stuff and tons of other unorganized but interesting stuff.
 
-Implementation of matrix free jacobian-vector products for QR-decomposition, Cholesky factorization, and bidiagonalization. These are needed for efficient forward-mode automatic differentiation.
+# Golub-Kahan Bidiagonalization VJP and JVP
 
-Next up are vector-jacobian products of the above, needed for reverse-mode automatic differentiation.
+The implementation lives in `/tests/test_bidiag_JVP_and_VJP_jax.py`.
+The code generating the plot lives in `/benchmark.py`
+![alt text](benchmark_graph.png)
+
+
 
 # CAS system to assist in finding the adjoint system
-Can compute differentials, simplify expressions.
+Can compute differentials, simplify expressions. 
 ```text
 Differentiated constraints:
 dc1 = (dA·R + A·dR - dL·B - L·dB) = 0
