@@ -201,13 +201,13 @@ def bidiagonalize_primal(num_matvecs):
         r1_tilde: ArrayLike,
         *matvec_params,
     ) -> BidiagOutput:
-        _, vecmat_fun = jax.vjp(matvec, r1_tilde, matvec_params)
+        _, vecmat_fun = jax.vjp(matvec, r1_tilde, *matvec_params)
 
         def vecmat(v):
             return vecmat_fun(v)[0]
 
         (ncols,) = np.shape(r1_tilde)
-        w0_like = jax.eval_shape(matvec, r1_tilde, matvec_params)
+        w0_like = jax.eval_shape(matvec, r1_tilde, *matvec_params)
         (nrows,) = np.shape(w0_like)
 
         c = 1 / jnp.linalg.norm(r1_tilde)
@@ -236,7 +236,7 @@ def bidiagonalize_primal(num_matvecs):
             # Forward pass step
             if True:
                 t = (
-                    matvec(carry.rs[:, n], matvec_params)
+                    matvec(carry.rs[:, n], *matvec_params)
                     - carry.bs[n - 1] * carry.ls[:, n - 1]
                 )
 
@@ -501,7 +501,7 @@ def bidiagonalize_vjpable_matvec(
         matvec: MatVec, v0: ArrayLike, *matvec_params
     ) -> tuple[BidiagOutput, tuple[BidiagCache_matvec, tuple]]:
         matvec_convert, aux_args = jax.closure_convert(
-            lambda u, v: matvec(u, *v), v0, matvec_params
+            lambda u, *v: matvec(u, *v), v0, *matvec_params
         )
 
         primal = primal_map(matvec_convert, v0, *matvec_params, *aux_args)
@@ -525,9 +525,8 @@ def bidiagonalize_vjpable_matvec(
         def vecmat(v):
             return vecmat_fun(v)[0]
 
-        (ncols,) = np.shape(cache.start_vector)
         w0_like = jax.eval_shape(matvec, cache.start_vector, *matvec_params)
-        (nrows,) = np.shape(w0_like)
+        (n,) = np.shape(w0_like)
 
         # Unpack primal variables from cache. These are 0-indexed.
         betas = cache.primal.betas
@@ -535,7 +534,6 @@ def bidiagonalize_vjpable_matvec(
         rs = cache.primal.rs
         ls = cache.primal.ls
         c = cache.primal.c
-        (n, m) = (nrows, ncols)
 
         k = num_matvecs
 
@@ -551,66 +549,60 @@ def bidiagonalize_vjpable_matvec(
         def rewritten_gradable_fn(params, lam, r, l, rho):
             return -lam @ matvec(r, *params) - l @ matvec(rho, *params)
 
-        # need lams[:, k - i + 1]
-        # need rhos[:, k - i]
-        def body_fun(i: int, carry: CarryState):
+        def body_fun(i_in: int, carry: CarryState):
             # 'i' will go from 0 to k-2 (inclusive)
-            # we subtract i from k to go from k to 2 (inclusive)
-            ai = k - i
-            """adjoint index, 1-based"""
-            pi = k - i - 1
-            """primal index, 0-based"""
+            i = k - i_in - 1
 
             lambda_i_plus_one = carry.lambda_i_plus_one
 
             rho_i = carry.rho_i
 
-            t = -nabla.alphas[pi] - rs[:, pi].T @ rho_i
+            t = -nabla.alphas[i] - rs[:, i].T @ rho_i
             sigma = (
-                -ls[:, pi].T
+                -ls[:, i].T
                 @ (
-                    nabla.ls[:, pi]
-                    + betas[pi] * lambda_i_plus_one
+                    nabla.ls[:, i]
+                    + betas[i] * lambda_i_plus_one
                     - matvec(rho_i, *matvec_params)
                 )
-                - alphas[pi] * t
+                - alphas[i] * t
             )
 
             lams_undivided = (
-                -nabla.ls[:, pi]
-                - betas[pi] * lambda_i_plus_one
+                -nabla.ls[:, i]
+                - betas[i] * lambda_i_plus_one
                 + matvec(rho_i, *matvec_params)
-                - sigma * ls[:, pi]
+                - sigma * ls[:, i]
             )
             lambda_i = jax.lax.cond(
-                pred=jnp.allclose(alphas[pi], 0.0),
+                pred=jnp.allclose(alphas[i], 0.0),
                 true_fun=lambda: 0 * lams_undivided,
-                false_fun=lambda: lams_undivided / alphas[pi],
+                false_fun=lambda: lams_undivided / alphas[i],
             )
 
-            w = -nabla.betas[pi - 1] - ls[:, pi - 1].T @ lambda_i
+            w = -nabla.betas[i - 1] - ls[:, i - 1].T @ lambda_i
             omega = (
-                -rs[:, pi].T @ (nabla.rs[:, pi] - vecmat(lambda_i) + alphas[pi] * rho_i)
-                - betas[pi - 1] * w
+                -rs[:, i].T @ (nabla.rs[:, i] - vecmat(lambda_i) + alphas[i] * rho_i)
+                - betas[i - 1] * w
             )
             undivided_rhos_ = (
-                -nabla.rs[:, pi]
+                -nabla.rs[:, i]
                 + vecmat(lambda_i)
-                - alphas[pi] * rho_i
-                - omega * rs[:, pi]
+                - alphas[i] * rho_i
+                - omega * rs[:, i]
             )
 
             rho_i_minus_one = jax.lax.cond(
-                pred=jnp.allclose(betas[pi - 1], 0.0),
+                pred=jnp.allclose(betas[i - 1], 0.0),
                 true_fun=lambda: 0 * undivided_rhos_,
-                false_fun=lambda: undivided_rhos_ / betas[pi - 1],
+                false_fun=lambda: undivided_rhos_ / betas[i - 1],
             )
 
             new_param_grad_incr = jax.grad(rewritten_gradable_fn, argnums=0)(
                 matvec_params,
                 lambda_i,
-                rs[:, ai],
-                ls[:, ai],
+                rs[:, i],
+                ls[:, i],
                 rho_i,
             )
 
@@ -645,46 +637,41 @@ def bidiagonalize_vjpable_matvec(
             )
 
         # last iteration steps:
-        ai = 1
-        """adjoint index, 1-based"""
-        pi = 0
-        """primal index, 0-based"""
 
         if num_matvecs > 1:  # beta is defined from num_matvecs >= 2
-            beta_times_next_lam = betas[pi] * output.lambda_i_plus_one
+            beta_times_next_lam = betas[0] * output.lambda_i_plus_one
         else:
             beta_times_next_lam = 0 * output.lambda_i_plus_one
 
-        t = -nabla.alphas[pi] - rs[:, pi].T @ output.rho_i
+        t = -nabla.alphas[0] - rs[:, 0].T @ output.rho_i
 
         sigma = (
-            -ls[:, pi].T
+            -ls[:, 0].T
             @ (
-                nabla.ls[:, pi]
+                nabla.ls[:, 0]
                 + beta_times_next_lam
                 - matvec(output.rho_i, *matvec_params)
             )
-            - alphas[pi] * t
+            - alphas[0] * t
         )
 
         lambda_1 = (
-            -nabla.ls[:, pi]
+            -nabla.ls[:, 0]
             - beta_times_next_lam
             + matvec(output.rho_i, *matvec_params)
-            - sigma * ls[:, pi]
-        ) / alphas[pi]
+            - sigma * ls[:, 0]
+        ) / alphas[0]
 
         omega = (
-            -rs[:, pi].T
-            @ (nabla.rs[:, pi] - vecmat(lambda_1) + alphas[pi] * output.rho_i)
+            -rs[:, 0].T @ (nabla.rs[:, 0] - vecmat(lambda_1) + alphas[0] * output.rho_i)
             - c * nabla.c
         )
 
         kappa = (
-            -nabla.rs[:, pi]
+            -nabla.rs[:, 0]
             + vecmat(lambda_1)
-            - alphas[pi] * output.rho_i
-            - omega * rs[:, pi]
+            - alphas[0] * output.rho_i
+            - omega * rs[:, 0]
         )
 
         # use kappa and rhos and lambdas to compute grads.A and grads.start_vector
@@ -1157,7 +1144,7 @@ def test_bidiag_vjp_agrees_with_jax(seed):
         betas=jax.random.normal(key=mask_rng, shape=(num_matvecs - 1,)),
     )
 
-    primal, jax_vjp = jax.vjp(
+    _, jax_vjp = jax.vjp(
         lambda p: bidiagonalize(p, int(num_matvecs)), (A, start_vector)
     )
 
@@ -1168,18 +1155,17 @@ def test_bidiag_vjp_agrees_with_jax(seed):
     # )
     # custom_grads = custom_vjp(cotangent)
 
-    def matvec(v, *params):
-        (A,) = params
+    def matvec(v, A):
         return A @ v
 
     bidiag = bidiagonalize_vjpable_matvec(int(num_matvecs), custom_vjp=True)
 
     _, custom_vjp_matvec_fun = jax.vjp(
-        lambda vec, params: bidiag(matvec, vec, *params),
+        lambda vec, *params: bidiag(matvec, vec, *params),
         start_vector,
-        (A,),
+        A,
     )
-    dvec, (Agrad,) = custom_vjp_matvec_fun(cotangent)
+    dvec, Agrad = custom_vjp_matvec_fun(cotangent)
 
     # print("A grad:", jax_grads[0][0])
     # print("custom A grad", custom_grads[0][0])
@@ -1227,18 +1213,16 @@ if __name__ == "__main__":
         betas=jax.random.normal(key=mask_rng, shape=(num_matvecs - 1,)),
     )
 
-    def matvec(v, *params):
-        (A,) = params
-        # A = jnp.diag(d)
+    def matvec(v, A):
         return A @ v
 
     # print(jax.jacfwd(matvec, argnums=1)(vec, (A,)))
 
     bidiag = bidiagonalize_vjpable_matvec(num_matvecs=num_matvecs, custom_vjp=True)
     primal, custom_vjp_matvec_fun = jax.vjp(
-        lambda vec, params: bidiag(matvec, vec, *params),
+        lambda vec, *params: bidiag(matvec, vec, *params),
         vec,
-        (A,),
+        A,
     )
 
     (dvec, rest) = custom_vjp_matvec_fun(cotangent)

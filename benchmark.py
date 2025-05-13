@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 from tests.test_bidiag_JVP_and_VJP_jax import (
+    bidiagonalize_vjpable_matvec,
     bidiagonalize_vjpable,
     BidiagOutput,
-    bidiagonalize,
+    bidiagonalize_primal,
 )
 
 
@@ -26,7 +27,6 @@ def benchmark_bidiag_gradients(
         for j, matvec_num in enumerate(matvec_nums):
             # Create and compile JAX VJP function
             key = jax.random.PRNGKey(0)
-            A = jax.random.normal(key, shape=(size, size))
             start_vector = jax.random.normal(key, shape=(size,))
             cotangent = BidiagOutput(
                 c=jax.random.normal(key, shape=()),
@@ -37,32 +37,39 @@ def benchmark_bidiag_gradients(
                 betas=jax.random.normal(key, shape=(matvec_num - 1,)),
             )
 
+            def matvec(v, s):
+                return s * v
+
+            bidiag_custom = bidiagonalize_vjpable_matvec(matvec_num, custom_vjp=True)
+            # Create and compile custom VJP function
             _, jax_vjp_fn = jax.vjp(
-                lambda p: bidiagonalize(p, matvec_num), (A, start_vector)
+                lambda vec, *params: bidiag_custom(matvec, vec, *params),
+                start_vector,
+                jnp.array(0.0),
             )
 
             # Compile
             jax_vjp_fn = jax.jit(jax_vjp_fn)
-            ((dA, dv),) = jax_vjp_fn(cotangent)
-            dA.block_until_ready()
+            (dv, dA) = jax_vjp_fn(cotangent)
             dv.block_until_ready()
-            print("hey")
+            dA.block_until_ready()
 
+            func = bidiagonalize_vjpable_matvec(matvec_num, custom_vjp=False)
             # Create and compile custom VJP function
             _, custom_vjp_fn = jax.vjp(
-                bidiagonalize_vjpable(matvec_num, custom_vjp=True),
-                (A, start_vector),
+                lambda vec, *params: func(matvec, vec, *params),
+                start_vector,
+                jnp.array(0.0),
             )
             custom_vjp_fn = jax.jit(custom_vjp_fn)
             # Compile
-            ((dA, dv),) = custom_vjp_fn(cotangent)
+            (dv, dA) = custom_vjp_fn(cotangent)
             dA.block_until_ready()
             dv.block_until_ready()
 
             # Time repeats with different random inputs
             for r in range(repeats):
                 key = jax.random.PRNGKey(r)
-                A = jax.random.normal(key, shape=(size, size))
                 start_vector = jax.random.normal(key, shape=(size,))
                 cotangent = BidiagOutput(
                     c=jax.random.normal(key, shape=()),
@@ -75,14 +82,14 @@ def benchmark_bidiag_gradients(
 
                 # Time JAX VJP
                 start_time = time.time()
-                ((dA, dv),) = jax_vjp_fn(cotangent)
+                (dv, dA) = jax_vjp_fn(cotangent)
                 dA.block_until_ready()
                 dv.block_until_ready()
                 jax_times[i, j] += time.time() - start_time
 
                 # Time custom VJP
                 start_time = time.time()
-                ((dA, dv),) = custom_vjp_fn(cotangent)
+                (dv, dA) = custom_vjp_fn(cotangent)
                 dA.block_until_ready()
                 dv.block_until_ready()
                 custom_times[i, j] += time.time() - start_time
