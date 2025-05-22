@@ -15,16 +15,18 @@ from tests.test_bidiag_JVP_and_VJP_jax import (
 def benchmark_bidiag_gradients(
     matvec_nums,
     matrix_sizes,
-    repeats=10,
+    repeats=5,
 ):
-    jax_times = np.zeros((len(matrix_sizes), len(matvec_nums)))
-    custom_times = np.zeros((len(matrix_sizes), len(matvec_nums)))
+    # Store all runtimes for each configuration
+    jax_all_times = np.zeros((len(matrix_sizes), len(matvec_nums), repeats))
+    custom_all_times = np.zeros((len(matrix_sizes), len(matvec_nums), repeats))
 
     total_iters = len(matrix_sizes) * len(matvec_nums) * repeats
     pbar = tqdm(total=total_iters, desc="Running benchmarks")
 
-    for i, size in enumerate(matrix_sizes):
-        for j, matvec_num in enumerate(matvec_nums):
+    for j, matvec_num in enumerate(matvec_nums):
+        for i, size in enumerate(matrix_sizes):
+            pbar.set_description(f"dim:{size}, depth:{matvec_num}")
             # Create and compile JAX VJP function
             key = jax.random.PRNGKey(0)
             start_vector = jax.random.normal(key, shape=(size,))
@@ -37,6 +39,7 @@ def benchmark_bidiag_gradients(
                 betas=jax.random.normal(key, shape=(matvec_num - 1,)),
             )
 
+            # minimalist function that does very little work.
             def matvec(v, s):
                 return s * v
 
@@ -61,8 +64,8 @@ def benchmark_bidiag_gradients(
                 start_vector,
                 jnp.array(0.0),
             )
-            custom_vjp_fn = jax.jit(custom_vjp_fn)
             # Compile
+            custom_vjp_fn = jax.jit(custom_vjp_fn)
             (dv, dA) = custom_vjp_fn(cotangent)
             dA.block_until_ready()
             dv.block_until_ready()
@@ -85,56 +88,101 @@ def benchmark_bidiag_gradients(
                 (dv, dA) = jax_vjp_fn(cotangent)
                 dA.block_until_ready()
                 dv.block_until_ready()
-                jax_times[i, j] += time.time() - start_time
+                jax_all_times[i, j, r] = time.time() - start_time
 
                 # Time custom VJP
                 start_time = time.time()
                 (dv, dA) = custom_vjp_fn(cotangent)
                 dA.block_until_ready()
                 dv.block_until_ready()
-                custom_times[i, j] += time.time() - start_time
+                custom_all_times[i, j, r] = time.time() - start_time
 
                 pbar.update(1)
 
-            jax_times[i, j] /= repeats
-            custom_times[i, j] /= repeats
+    # Calculate means and standard deviations
+    jax_times = np.mean(jax_all_times, axis=2)
+    custom_times = np.mean(custom_all_times, axis=2)
+    jax_stds = np.std(jax_all_times, axis=2)
+    custom_stds = np.std(custom_all_times, axis=2)
 
     pbar.close()
-    return matrix_sizes, matvec_nums, jax_times, custom_times
+    return matrix_sizes, matvec_nums, jax_times, custom_times, jax_stds, custom_stds
 
 
-def plot_benchmark_results(matrix_sizes, matvec_nums, jax_times, custom_times):
+def plot_benchmark_results(
+    matrix_sizes, matvec_nums, jax_times, custom_times, jax_stds, custom_stds
+):
     import matplotlib.pyplot as plt
 
     # Create figure with two subplots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-    # Plot scaling with matvec_nums (using first matrix size)
-    ax1.plot(matvec_nums, jax_times[0], label="JAX VJP", linestyle="--")
-    ax1.plot(matvec_nums, custom_times[0], label="Custom VJP", linestyle="-")
+    # Plot scaling with matvec_nums for all matrix sizes
+    colors = plt.cm.hsv(np.linspace(0, 0.8, len(matrix_sizes)))
+    for i, dim in enumerate(matrix_sizes):
+        ax1.errorbar(
+            matvec_nums,
+            jax_times[i],
+            yerr=jax_stds[i],
+            # label=f"JAX VJP (dim={dim})",
+            linestyle="--",
+            color=colors[i],
+            capsize=5,
+        )
+        ax1.errorbar(
+            matvec_nums,
+            custom_times[i],
+            yerr=custom_stds[i],
+            label=f"Custom VJP (dim={dim})",
+            linestyle="-",
+            color=colors[i],
+            capsize=5,
+        )
     ax1.set_xlabel("Number of iterations")
     ax1.set_ylabel("Gradient runtime (seconds)")
-    ax1.set_yscale("log")
-    ax1.set_title(f"Scaling with iterations\n(n={matrix_sizes[0]})")
-    ax1.legend()
+    # ax1.set_yscale("log")
+    ax1.set_title("Scaling with iterations")
+    ax1.legend(fontsize=8)
     ax1.grid(True)
 
-    # Plot scaling with matrix size (using first matvec_num)
-    ax2.plot(matrix_sizes, jax_times[:, 0], label="JAX VJP", linestyle="--")
-    ax2.plot(matrix_sizes, custom_times[:, 0], label="Custom VJP", linestyle="-")
-    ax2.set_xlabel("Matrix dimension n")
+    colors = plt.cm.hsv(np.linspace(0, 0.8, len(matvec_nums)))
+    # Plot scaling with matrix size for all matvec_nums
+    for i, matvec_num in enumerate(matvec_nums):
+        ax2.errorbar(
+            matrix_sizes,
+            jax_times[:, i],
+            yerr=jax_stds[:, i],
+            # label=f"JAX VJP (k={matvec_num})",
+            linestyle="--",
+            color=colors[i],
+            capsize=5,
+        )
+        ax2.errorbar(
+            matrix_sizes,
+            custom_times[:, i],
+            yerr=custom_stds[:, i],
+            label=f"Custom VJP (k={matvec_num})",
+            linestyle="-",
+            color=colors[i],
+            capsize=5,
+        )
+    ax2.set_xlabel("Vector size n")
     ax2.set_ylabel("Gradient runtime (seconds)")
-    ax2.set_yscale("log")
-    ax2.set_title(f"Scaling with matrix size\n(iterations={matvec_nums[0]})")
-    ax2.legend()
+    # ax2.set_yscale("log")
+    ax2.set_title("Scaling with matrix size")
+    ax1.legend(fontsize=8)
     ax2.grid(True)
 
     plt.tight_layout()
     plt.show()
 
 
-matrix_sizes, matvec_nums, jax_times, custom_times = benchmark_bidiag_gradients(
-    matvec_nums=[100],
-    matrix_sizes=np.linspace(100, 5000, 10).astype(int),
+matrix_sizes, matvec_nums, jax_times, custom_times, jax_stds, custom_stds = (
+    benchmark_bidiag_gradients(
+        matvec_nums=np.linspace(1, 3000, 10, endpoint=True).astype(int),
+        matrix_sizes=np.linspace(10000, 10000, 1, endpoint=True).astype(int),
+    )
 )
-plot_benchmark_results(matrix_sizes, matvec_nums, jax_times, custom_times)
+plot_benchmark_results(
+    matrix_sizes, matvec_nums, jax_times, custom_times, jax_stds, custom_stds
+)

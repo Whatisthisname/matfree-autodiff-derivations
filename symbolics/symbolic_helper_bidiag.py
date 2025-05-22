@@ -41,12 +41,12 @@ R = Var(MatrixLit(name="R", shape=Shape((A_cols, rank_dim))))
 e_1 = Const(MatrixLit(name="e1", shape=Shape((R.cols, UnitDim))))
 e_k = Const(MatrixLit(name="ek", shape=Shape((rank_dim, UnitDim))))
 r_input = Var(MatrixLit(name="r~", shape=Shape((R.rows, UnitDim))))
-r_last = Var(MatrixLit(name="(r_k+1)", shape=Shape((R.rows, UnitDim))))
+res = Var(MatrixLit(name="res", shape=Shape((R.rows, UnitDim))))
 c = Var(MatrixLit(name="c", shape=Shape((UnitDim, UnitDim))))
-beta_last = Var(MatrixLit(name="beta", shape=Shape((UnitDim, UnitDim))))
 one = Const(MatrixLit(name="1", shape=Shape((UnitDim, UnitDim))))
 
 I_L = Const(MatrixLit(name="1", shape=Shape((rank_dim, rank_dim))))
+Lgram = Var(MatrixLit(name="G", shape=Shape((rank_dim, rank_dim))))
 I_R = Const(MatrixLit(name="1", shape=Shape((rank_dim, rank_dim))))
 
 zero = Const(MatrixLit(name="0", shape=B.shape()))
@@ -57,13 +57,13 @@ inverse_norm_of_r_cubed = Var(
 
 # Mark input and output variables
 input_variables = [A, r_input]
-output_variables = [L, B, R, c]
+output_variables = [L, B, R, c, Lgram]
 
 # Define constraints:
 constraints = [
     Equation(A * R, L * B),
-    Equation(A.T * L, R * B.T - r_last * beta_last * e_k.T),
-    Equation(Mask(L.T * L - I_L, Sps.Diag), (L.T * L) * 0),
+    Equation(A.T * L, R * B.T + res * e_k.T),
+    Equation(Mask(L.T * L - (I_L + Mask(Lgram, Sps.SLower)), Sps.Lower), (L.T * L) * 0),
     Equation(Mask(R.T * R - I_R, Sps.Diag), (R.T * R) * 0),
     Equation(R * e_1, r_input * c),
     Equation(Mask(B, Sps.SSUpper) + Mask(B, Sps.SLower), 0 * B),
@@ -96,13 +96,13 @@ differentiated_constraints = [
 print()
 print("Differentiated constraints:")
 for i, dc in enumerate(differentiated_constraints):
-    print(f"dc{i+1} = " + dc.str_compact())
+    print(f"dc{i + 1} = " + dc.str_compact())
 
 dcs = [dc.lhs for dc in differentiated_constraints]
 
 # auto-define the lambda variables.
 lambdas = [
-    Var(MatrixLit(name=f"λ{i+1}", shape=expr.shape())) for i, expr in enumerate(dcs)
+    Var(MatrixLit(name=f"λ{i + 1}", shape=expr.shape())) for i, expr in enumerate(dcs)
 ]
 
 grads = [

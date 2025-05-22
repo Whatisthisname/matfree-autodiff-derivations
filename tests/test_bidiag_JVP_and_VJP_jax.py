@@ -8,7 +8,7 @@ import jax  # type: ignore[import-not-found]
 from jax.typing import ArrayLike  # type: ignore[import-not-found]
 import jax.numpy as jnp  # type: ignore[import-not-found]
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_debug_nans", True)
 
 
@@ -496,7 +496,7 @@ def bidiagonalize_vjpable_matvec(
 ):
     primal_map = bidiagonalize_primal(num_matvecs)
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _bidiag_vjp_fwd(
         matvec: MatVec, v0: ArrayLike, *matvec_params
     ) -> tuple[BidiagOutput, tuple[BidiagCache_matvec, tuple]]:
