@@ -15,7 +15,7 @@ class MLP(eqx.Module):
         width_size=64,
         depth=2,
         key=None,
-        activation=jax.nn.relu,
+        activation=jax.nn.selu,
     ):
         if key is None:
             key = jax.random.PRNGKey(0)
@@ -39,8 +39,8 @@ class KoopmanModel(eqx.Module):
 
     def __init__(self, input_dim, latent_dim, key):
         enc_key, dec_key = jax.random.split(key)
-        self.encoder = MLP(input_dim, latent_dim, key=enc_key)
-        self.decoder = MLP(latent_dim, input_dim, key=dec_key)
+        self.encoder = MLP(input_dim, latent_dim, key=enc_key, depth=3)
+        self.decoder = MLP(latent_dim, input_dim, key=dec_key, depth=3)
         self.latent_dim = latent_dim
 
     def encode(self, x):

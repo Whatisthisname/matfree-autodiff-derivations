@@ -57,16 +57,16 @@ inverse_norm_of_r_cubed = Var(
 
 # Mark input and output variables
 input_variables = [A, r_input]
-output_variables = [L, B, R, c, Lgram]
+output_variables = [L, B, R, c]
 
 # Define constraints:
 constraints = [
     Equation(A * R, L * B),
     Equation(A.T * L, R * B.T + res * e_k.T),
-    Equation(Mask(L.T * L - (I_L + Mask(Lgram, Sps.SLower)), Sps.Lower), (L.T * L) * 0),
+    Equation(Mask(L.T * L - I_L, Sps.Lower), (L.T * L) * 0),
     Equation(Mask(R.T * R - I_R, Sps.Diag), (R.T * R) * 0),
     Equation(R * e_1, r_input * c),
-    Equation(Mask(B, Sps.SSUpper) + Mask(B, Sps.SLower), 0 * B),
+    # Equation(Mask(B, Sps.SSUpper) + Mask(B, Sps.SLower), 0 * B),
 ]
 
 print()

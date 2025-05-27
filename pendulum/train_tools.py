@@ -10,24 +10,22 @@ from matfree.decomp import bidiag as matfree_bidiag
 
 def bidiagonalize(Phi: ArrayLike, bidiag_func, key):
     # start_vec = jax.random.normal(key=key, shape=Phi[0, :].shape)
-    # start_vec = Phi[0, :]
-    # bidiag_output: bidiag_module.BidiagOutput = bidiag_func(start_vec, Phi)
-    # B = jnp.diag(bidiag_output.alphas) + jnp.diag(bidiag_output.betas, 1)
-    # L = bidiag_output.ls
-    # R_T = bidiag_output.rs.T
+    start_vec = Phi[0, :]
+    bidiag_output: bidiag_module.BidiagOutput = bidiag_func(start_vec, Phi)
+    B = jnp.diag(bidiag_output.alphas) + jnp.diag(bidiag_output.betas, 1)
+    L = bidiag_output.ls
+    R_T = bidiag_output.rs.T
 
     # def matvec(v, mat):
     #     return mat @ v
-
     # matves = 100
     # result = matfree_bidiag(matves, materialize=True)(matvec, start_vec, Phi)
     # mL, mR = result.Q_tall
     # mB = result.J_small
 
-    Phi = jax.lax.stop_gradient(Phi)
-    Phi = jax.lax.stop_gradient(Phi)
-    L, B, R_T = jnp.linalg.svd(Phi, full_matrices=False)
-    B = jnp.diag(B)
+    # Phi = jax.lax.stop_gradient(Phi)
+    # L, B, R_T = jnp.linalg.svd(Phi, full_matrices=False)
+    # B = jnp.diag(B)
 
     return L, B, R_T
 
@@ -58,7 +56,7 @@ def compute_loss(model, trajec, bidiag_func, key):
     # Compute MSE loss in physical space with reconstruction error
     dynamics_loss = jnp.mean((Phi2 - Phi2_hat) ** 2)
     reconstruct_loss = jnp.mean((jax.vmap(model.decode)(Phi2_hat.T) - Traj2) ** 2)
-    loss = dynamics_loss + reconstruct_loss
+    loss = dynamics_loss + reconstruct_loss**2
     return loss, (A_koop, loss)
 
 
@@ -83,7 +81,7 @@ def train_koopman_model(
         return mat @ v
 
     baked = bidiag_module.bidiagonalize_vjpable_matvec(
-        num_matvecs=matvecs, custom_vjp=True
+        num_matvecs=matvecs, custom_vjp=True, reorthogonalize=True
     )
 
     def bidiag_func(vec, mat):
