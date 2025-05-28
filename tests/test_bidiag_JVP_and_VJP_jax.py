@@ -195,7 +195,7 @@ def bidiagonalize(
     return primal_output
 
 
-def bidiagonalize_primal(num_matvecs: int, reorthogonalize: bool = False):
+def bidiagonalize_matvec(num_matvecs: int, reorthogonalize: bool = False):
     def bidiagonalize_matvec(
         matvec: MatVec,
         r1_tilde: ArrayLike,
@@ -502,7 +502,7 @@ def bidiagonalize_vjpable_matvec(
     custom_vjp: bool = True,
     reorthogonalize: bool = False,
 ):
-    primal_map = bidiagonalize_primal(num_matvecs, reorthogonalize)
+    primal_map = bidiagonalize_matvec(num_matvecs, reorthogonalize)
 
     # @partial(jax.jit, static_argnums=(0,))
     def _bidiag_vjp_fwd(
@@ -578,7 +578,6 @@ def bidiagonalize_vjpable_matvec(
                 lambda_n = (
                     ls[:, n] * t - (1 / alphas[n]) * (np.eye(k) - ls @ ls.T) @ u_n
                 )
-                jax.debug.print("lambda inner prod with ls[:, n]: {}", ls.T @ lambda_n)
 
             else:
                 lams_undivided = -u_n - sigma * ls[:, n]
@@ -598,6 +597,50 @@ def bidiagonalize_vjpable_matvec(
                 pred=jnp.allclose(betas[n - 1], 0.0),
                 true_fun=lambda: 0 * undivided_rhos_,
                 false_fun=lambda: undivided_rhos_ / betas[n - 1],
+            )
+
+            jax.debug.print("first print", ordered=True)
+
+            jax.debug.print(
+                "da[{0}] = {1}",
+                n,
+                nabla.alphas[n] + ls[:, n].T @ lambda_n + rs[:, n].T @ rho_n,
+                ordered=True,
+            )
+
+            jax.debug.print(
+                "‖dl[{0}]‖₂ = {1}",
+                n,
+                jnp.linalg.norm(
+                    nabla.ls[:, n]
+                    + alphas[n] * lambda_n
+                    + betas[n] * lambda_n_plus_one
+                    - matvec(rho_n, *matvec_params)
+                    + ls[:, n] * sigma
+                ),
+                ordered=True,
+            )
+
+            jax.debug.print(
+                "db[{0}] = {1}",
+                n,
+                nabla.betas[n - 1]
+                + ls[:, n - 1].T @ lambda_n
+                + rs[:, n].T @ rho_n_minus_one,
+                ordered=True,
+            )
+
+            jax.debug.print(
+                "‖dr[{0}]‖₂ = {1}",
+                n,
+                jnp.linalg.norm(
+                    nabla.rs[:, n]
+                    - vecmat(lambda_n)
+                    + alphas[n] * rho_n
+                    + betas[n - 1] * rho_n_minus_one
+                    + rs[:, n] * omega
+                ),
+                ordered=True,
             )
 
             new_param_grad_incr = jax.grad(rewritten_gradable_fn, argnums=0)(
@@ -654,9 +697,12 @@ def bidiagonalize_vjpable_matvec(
         if reorthogonalize:
             lambda_1 = ls[:, 0] * t - (1 / alphas[0]) * (np.eye(k) - ls @ ls.T) @ u_n
         else:
-            lambda_1 = (-u_n - sigma * ls[:, 0]) / alphas[0]  # error?
-
-        jax.debug.print("lambda inner prod with ls[:, n]: {}", ls.T @ lambda_1)
+            lambda_1_undivided = -u_n - sigma * ls[:, 0]
+            lambda_1 = jax.lax.cond(
+                pred=jnp.allclose(alphas[0], 0.0),
+                true_fun=lambda: 0 * lambda_1_undivided,
+                false_fun=lambda: lambda_1_undivided / alphas[0],
+            )
 
         v = nabla.rs[:, 0] - vecmat(lambda_1) + alphas[0] * output.rho_n
 
@@ -899,20 +945,11 @@ def bidiagonalize_vjpable(num_matvecs: int, custom_vjp: bool = True):
     return jax.jit(_bidiagonalize)
 
 
-@pytest.mark.parametrize("seed", range(5))
-def test_shapes(seed):
-    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-        jax.random.PRNGKey(seed), num=5
-    )
-
-    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
-
-    A = jax.random.normal(key=fill_rng, shape=(n, m))
-    A = A.at[0, :].set(0)
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-
-    num_matvecs = int(jax.random.randint(key=mask_rng, minval=2, maxval=10, shape=()))
+def test_shape_match(bidiag_input):
+    A = bidiag_input["A"]
+    start_vector = bidiag_input["v"]
+    num_matvecs = bidiag_input["num_matvecs"]
+    m, n = bidiag_input["m"], bidiag_input["n"]
 
     result, tangents = bidiagonalize_jvp(
         (A, start_vector), (A, start_vector), num_matvecs
@@ -931,37 +968,18 @@ def test_shapes(seed):
     assert result.ls.shape == tangents.ls.shape
 
 
-@pytest.mark.parametrize("seed", range(50))
-def test_bidiag_properties(seed):
-    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-        jax.random.PRNGKey(seed), num=5
-    )
-    n = jax.random.randint(key=width_rng, minval=1, maxval=4 + 1, shape=())
-    m = jax.random.randint(key=height_rng, minval=1, maxval=4 + 1, shape=())
-    A = jax.random.normal(key=fill_rng, shape=(n, m))  # random tall-or-square matrix
-    if jax.random.uniform(key=mask_rng) < 0.4:
-        print("Setting first column to zero")
-        A = A.at[:, 0].set(0)
-
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-    print("A.shape", A.shape)
+def test_primal_constraints(bidiag_input):
+    A = bidiag_input["A"]
+    start_vector = bidiag_input["v"]
+    num_matvecs = bidiag_input["num_matvecs"]
 
     result, _ = bidiagonalize_jvp(
         (A, start_vector),
         (A, start_vector),
-        num_matvecs=min(int(n), int(m)),
+        num_matvecs=num_matvecs,
     )
 
     result: BidiagOutput = result
-
-    print("result alphas:", result.alphas)
-    print("result.L.shape", result.L.shape)
-    print("result.B.shape", result.B.shape)
-    print("result.R.shape", result.R.shape)
-
-    print("result.iterations_finished", result.iterations_finished)
-
-    print("res", result.res)
 
     assert np.allclose(
         A.T @ result.L,
@@ -986,238 +1004,217 @@ def test_bidiag_properties(seed):
     )
 
 
-@pytest.mark.parametrize("seed", range(30))
-def test_bidiag_jvp_with_autodiff(seed):
+@pytest.fixture(params=range(1, 11))
+def seed(request) -> int:
+    return request.param
+
+
+@pytest.fixture
+def bidiag_input(seed):
+    # Split RNG keys for different random operations
     (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
         jax.random.PRNGKey(seed), num=5
     )
+
+    # Generate random matrix dimensions between 1 and 6
     n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
     m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
-    A = jax.random.normal(key=fill_rng, shape=(n, m))
-    d_A = jax.random.normal(key=height_rng, shape=(n, m))
 
+    # Generate random matrix A and its tangent d_A
+    A = jax.random.normal(key=fill_rng, shape=(n, m))
+    dA = jax.random.normal(key=height_rng, shape=(n, m))
+
+    # Randomly zero out first column with 40% probability
     if jax.random.uniform(key=mask_rng) < 0.4:
         print("Setting first column to zero")
         A = A.at[:, 0].set(0)
 
-    print("Rank:", jnp.linalg.matrix_rank(A))
+    print("Matrix dimensions:", A.shape)
+    print("Matrix rank:", jnp.linalg.matrix_rank(A))
 
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-    d_start_vector = jax.random.normal(key=height_rng, shape=(m,))
+    # Generate random start vector and its tangent
+    v = jax.random.normal(key=rand_choice_rng, shape=(m,))
+    dv = jax.random.normal(key=height_rng, shape=(m,))
 
-    iterations = int(min(A.shape[0], A.shape[1]))
+    # Number of iterations is min dimension
+    num_matvecs = int(min(n, m))
+
+    return {
+        "A": A,
+        "d_A": dA,
+        "v": v,
+        "dv": dv,
+        "num_matvecs": num_matvecs,
+        "n": n,
+        "m": m,
+    }
+
+
+def _compare_bidiag_outputs(
+    output1: BidiagOutput, output2: BidiagOutput, atol: float = 1e-6
+):
+    """Compare two BidiagOutput objects for approximate equality."""
+    assert jnp.allclose(output1.c, output2.c, atol=atol), (
+        f"c differs: {output1.c} vs {output2.c}"
+    )
+    assert jnp.allclose(output1.rs, output2.rs, atol=atol), (
+        f"rs differs: {output1.rs} vs {output2.rs}"
+    )
+    assert jnp.allclose(output1.ls, output2.ls, atol=atol), (
+        f"ls differs: {output1.ls} vs {output2.ls}"
+    )
+    assert jnp.allclose(output1.alphas, output2.alphas, atol=atol), (
+        f"alphas differs: {output1.alphas} vs {output2.alphas}"
+    )
+    assert jnp.allclose(output1.betas, output2.betas, atol=atol), (
+        f"betas differs: {output1.betas} vs {output2.betas}"
+    )
+    assert jnp.allclose(output1.res, output2.res, atol=atol), (
+        f"res differs: {output1.res} vs {output2.res}"
+    )
+    assert output1.iterations_finished == output2.iterations_finished, (
+        "iterations_finished values differ"
+    )
+
+
+def _compare_bidiag_gradients(
+    vgrad1: ArrayLike,
+    vgrad2: ArrayLike,
+    paramgrad1: ArrayLike,
+    paramgrad2: ArrayLike,
+    atol: float = 1e-6,
+):
+    """Compare two BidiagOutput objects for approximate equality."""
+    assert jnp.allclose(vgrad1, vgrad2, atol=atol), "v gradients differ"
+    assert jnp.allclose(paramgrad1, paramgrad2, atol=atol), "parameter gradients differ"
+
+
+def test_jvp(bidiag_input):
+    A = bidiag_input["A"]
+    d_A = bidiag_input["d_A"]
+    start_vector = bidiag_input["v"]
+    d_start_vector = bidiag_input["dv"]
+    num_matvecs = bidiag_input["num_matvecs"]
+
+    print("Matrix dimensions:", A.shape)
+    print("Matrix rank:", jnp.linalg.matrix_rank(A))
 
     _, my_tangent = bidiagonalize_jvp(
         primals=(np.array(A), np.array(start_vector)),
         tangents=(np.array(d_A), np.array(d_start_vector)),
-        num_matvecs=iterations,
+        num_matvecs=num_matvecs,
     )
 
     _, jax_tangent = jax.jvp(
-        fun=lambda p: bidiagonalize(primals=p, num_matvecs=iterations),
+        fun=lambda p: bidiagonalize(primals=p, num_matvecs=num_matvecs),
         primals=((np.array(A), np.array(start_vector)),),
         tangents=((np.array(d_A), np.array(d_start_vector)),),
         has_aux=False,
     )
 
-    assert jnp.allclose(jax_tangent.c, my_tangent.c, atol=1e-6), (
-        f"c differs: {jax_tangent.c} vs {my_tangent.c}"
-    )
-    assert jnp.allclose(jax_tangent.rs, my_tangent.rs, atol=1e-6), (
-        f"rs differs: {jax_tangent.rs} vs {my_tangent.rs}"
-    )
-    assert jnp.allclose(jax_tangent.ls, my_tangent.ls, atol=1e-6), (
-        f"ls differs: {jax_tangent.ls} vs {my_tangent.ls}"
-    )
-    assert jnp.allclose(jax_tangent.alphas, my_tangent.alphas, atol=1e-6), (
-        f"alphas differs: {jax_tangent.alphas} vs {my_tangent.alphas}"
-    )
-    assert jnp.allclose(jax_tangent.betas, my_tangent.betas, atol=1e-6), (
-        f"betas differs: {jax_tangent.betas} vs {my_tangent.betas}"
-    )
-    assert jnp.allclose(jax_tangent.res, my_tangent.res, atol=1e-6), (
-        f"res differs: {jax_tangent.res} vs {my_tangent.res}"
-    )
+    _compare_bidiag_outputs(my_tangent, jax_tangent)
 
 
-@pytest.mark.parametrize("seed", range(10))
-def test_bidiag_agrees_with_jvp(seed):
-    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-        jax.random.PRNGKey(seed), num=5
+def test_primals(bidiag_input):
+    A = bidiag_input["A"]
+    d_A = bidiag_input["d_A"]
+    start_vector = bidiag_input["v"]
+    d_start_vector = bidiag_input["dv"]
+    num_matvecs = bidiag_input["num_matvecs"]
+
+    primal_simple = bidiagonalize(
+        primals=(np.array(A), np.array(start_vector)),
+        num_matvecs=num_matvecs,
     )
-    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
-    A = jax.random.normal(key=fill_rng, shape=(n, m))
-    d_A = jax.random.normal(key=mask_rng, shape=(n, m))
-
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
-    d_start_vector = jax.random.normal(key=height_rng, shape=(m,))
-
-    iterations = min(A.shape[0], A.shape[1])
 
     def matvec(vec, *params):
         return A @ vec
 
-    vjp_output = bidiagonalize_primal(num_matvecs=iterations)(
+    primal_matvec = bidiagonalize_matvec(num_matvecs=num_matvecs)(
         matvec, np.array(start_vector)
     )
 
-    # Get output from bidiagonalize
-    bidiag_output = bidiagonalize(
-        primals=(np.array(A), np.array(start_vector)),
-        num_matvecs=iterations,
-    )
+    _compare_bidiag_outputs(primal_simple, primal_matvec)
 
-    assert np.allclose(bidiag_output.c, vjp_output.c, atol=1e-6), "c values differ"
-    assert np.allclose(bidiag_output.rs, vjp_output.rs, atol=1e-6), "rs values differ"
-    assert np.allclose(bidiag_output.ls, vjp_output.ls, atol=1e-6), "ls values differ"
-    assert np.allclose(bidiag_output.alphas, vjp_output.alphas, atol=1e-6), (
-        "alphas values differ"
-    )
-    assert np.allclose(bidiag_output.betas, vjp_output.betas, atol=1e-6), (
-        "betas values differ"
-    )
-    assert np.allclose(bidiag_output.res, vjp_output.res, atol=1e-6), (
-        "res values differ"
-    )
-
-    # Get output from bidiagonalize_jvp
-    jvp_output, _ = bidiagonalize_jvp(
+    primal_jvp, _ = bidiagonalize_jvp(
         primals=(np.array(A), np.array(start_vector)),
         tangents=(np.array(d_A), np.array(d_start_vector)),
-        num_matvecs=iterations,
+        num_matvecs=num_matvecs,
     )
 
-    # Compare all fields
-    assert np.allclose(bidiag_output.c, jvp_output.c, atol=1e-6), "c values differ"
-    assert np.allclose(bidiag_output.rs, jvp_output.rs, atol=1e-6), "rs values differ"
-    assert np.allclose(bidiag_output.ls, jvp_output.ls, atol=1e-6), "ls values differ"
-    assert np.allclose(bidiag_output.alphas, jvp_output.alphas, atol=1e-6), (
-        "alphas values differ"
-    )
-    assert np.allclose(bidiag_output.betas, jvp_output.betas, atol=1e-6), (
-        "betas values differ"
-    )
-    assert np.allclose(bidiag_output.res, jvp_output.res, atol=1e-6), (
-        "res values differ"
-    )
-    assert bidiag_output.iterations_finished == jvp_output.iterations_finished, (
-        "iterations_finished values differ"
+    _compare_bidiag_outputs(primal_simple, primal_jvp)
+
+
+@pytest.fixture
+def bidiag_cotangent(bidiag_input, seed):
+    # Use a new RNG key for cotangent generation
+    (cotangent_rng,) = jax.random.split(jax.random.PRNGKey(seed + 1000), num=1)
+
+    # Random dimensions
+    n = bidiag_input["n"]
+    m = bidiag_input["m"]
+    num_matvecs = bidiag_input["num_matvecs"]
+
+    # Random cotangent vector with the same structure as BidiagOutput
+    return BidiagOutput(
+        c=jax.random.normal(key=cotangent_rng, shape=()),
+        res=jax.random.normal(key=cotangent_rng, shape=(m,)),
+        rs=jax.random.normal(key=cotangent_rng, shape=(m, num_matvecs)),
+        ls=jax.random.normal(key=cotangent_rng, shape=(n, num_matvecs)),
+        alphas=jax.random.normal(key=cotangent_rng, shape=(num_matvecs,)),
+        betas=jax.random.normal(key=cotangent_rng, shape=(num_matvecs - 1,)),
     )
 
 
-@pytest.mark.parametrize("seed", range(10))
-def test_bidiag_vjp_agrees_with_jax(seed):
-    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-        jax.random.PRNGKey(seed), num=5
-    )
-    n = jax.random.randint(key=width_rng, minval=2, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=2, maxval=6, shape=())
-    n, m = 5, 5
-    A = jax.random.normal(key=fill_rng, shape=(n, m))
-    start_vector = jax.random.normal(key=rand_choice_rng, shape=(m,))
+def test_vjp(bidiag_input, bidiag_cotangent):
+    A = bidiag_input["A"]
+    start_vector = bidiag_input["v"]
+    num_matvecs = bidiag_input["num_matvecs"]
 
     print(f"Matrix A shape: {A.shape}")
     print(f"A: {A}")
-
-    num_matvecs = int(jax.random.randint(key=fill_rng, minval=1, maxval=8, shape=()))
-    num_matvecs = min(A.shape[0], A.shape[1])
     print("num_matvecs", num_matvecs)
 
-    # Create a random cotangent vector with the same structure as BidiagOutput
-    cotangent = BidiagOutput(
-        c=jax.random.normal(key=mask_rng, shape=()),
-        res=jax.random.normal(key=height_rng, shape=(m,)),
-        rs=jax.random.normal(key=fill_rng, shape=(m, num_matvecs)),
-        ls=jax.random.normal(key=rand_choice_rng, shape=(n, num_matvecs)),
-        alphas=jax.random.normal(key=width_rng, shape=(num_matvecs,)),
-        betas=jax.random.normal(key=mask_rng, shape=(num_matvecs - 1,)),
-    )
-
+    # --- simplest bidiag with autodiff
     _, jax_vjp = jax.vjp(
         lambda p: bidiagonalize(p, int(num_matvecs)), (A, start_vector)
     )
+    ((dA_simple_auto, dv_simple_auto),) = jax_vjp(bidiag_cotangent)
 
-    jax_grads = jax_vjp(cotangent)
-
-    # _, custom_vjp = jax.vjp(
-    #     bidiagonalize_vjpable(int(num_matvecs), custom_vjp=True), (A, start_vector)
-    # )
-    # custom_grads = custom_vjp(cotangent)
-
+    # --- matvec bidiag with autodiff
     def matvec(v, A):
         return A @ v
 
-    bidiag = bidiagonalize_vjpable_matvec(
+    bidiag_func = bidiagonalize_vjpable_matvec(
         int(num_matvecs),
-        custom_vjp=True,
-        reorthogonalize=False,  # True
+        custom_vjp=False,  # False!
+        reorthogonalize=False,
+    )
+    _, jax_vjp = jax.vjp(
+        lambda inp, *params: bidiag_func(matvec, inp, *params), start_vector, A
     )
 
-    fwd, custom_vjp_matvec_fun = jax.vjp(
-        lambda vec, *params: bidiag(matvec, vec, *params),
+    (dv_matvec_auto, dA_matvec_auto) = jax_vjp(bidiag_cotangent)
+
+    # --- matvec bidiag with custom jvp
+    bidiag_func = bidiagonalize_vjpable_matvec(
+        int(num_matvecs),
+        custom_vjp=True,  # True!
+        reorthogonalize=False,
+    )
+    _, custom_vjp_matvec_fun = jax.vjp(
+        lambda vec, *params: bidiag_func(matvec, vec, *params),
         start_vector,
         A,
     )
-    dvec, Agrad = custom_vjp_matvec_fun(cotangent)
-    # assert False
-    # print("A grad:", jax_grads[0][0])
-    # print("custom A grad", custom_grads[0][0])
-    # print("start vec grad:", jax_grads[0][1])
-    # print("custom start vec grad:", custom_grads[0][1])
+    (dv_matvec_custom, dA_matvec_custom) = custom_vjp_matvec_fun(bidiag_cotangent)
 
-    print("Agrad", Agrad)
-    print("jax_grads[0][0]", jax_grads[0][0])
-
-    # # Compare the gradients
-    # assert jnp.allclose(jax_grads[0][0], custom_grads[0][0], atol=1e-6), (
-    #     "A gradients differ"
-    # )
-    # assert jnp.allclose(jax_grads[0][1], custom_grads[0][1], atol=1e-6), (
-    #     "start_vector gradients differ"
-    # )
-
-    assert jnp.allclose(dvec, jax_grads[0][1], atol=1e-6), (
-        "start_vector gradients differ"
+    # --- comparing
+    _compare_bidiag_gradients(
+        dv_simple_auto, dv_matvec_auto, dA_simple_auto, dA_matvec_auto
     )
-    assert jnp.allclose(Agrad, jax_grads[0][0], atol=1e-6), "A gradients differ"
-
-
-if __name__ == "__main__":
-    A = jnp.array([[1.0, 1.0], [0.0, 0.0]])
-
-    vec = jnp.array([3.0, 1.1313424])
-
-    num_matvecs = 1
-
-    (width_rng, height_rng, fill_rng, mask_rng, rand_choice_rng) = jax.random.split(
-        jax.random.PRNGKey(2), num=5
-    )
-    n = 1
-    m = 1
-    A = jax.random.normal(key=fill_rng, shape=(n, m))
-    vec = jax.random.normal(key=rand_choice_rng, shape=(m,))
-
-    # Create a random cotangent vector with the same structure as BidiagOutput
-    cotangent = BidiagOutput(
-        c=jax.random.normal(key=mask_rng, shape=()),
-        res=jax.random.normal(key=height_rng, shape=(m,)),
-        rs=jax.random.normal(key=fill_rng, shape=(m, num_matvecs)),
-        ls=jax.random.normal(key=rand_choice_rng, shape=(n, num_matvecs)),
-        alphas=jax.random.normal(key=width_rng, shape=(num_matvecs,)),
-        betas=jax.random.normal(key=mask_rng, shape=(num_matvecs - 1,)),
+    _compare_bidiag_gradients(
+        dv_simple_auto, dv_matvec_custom, dA_simple_auto, dA_matvec_custom
     )
 
-    def matvec(v, A):
-        return A @ v
-
-    # print(jax.jacfwd(matvec, argnums=1)(vec, (A,)))
-
-    bidiag = bidiagonalize_vjpable_matvec(num_matvecs=num_matvecs, custom_vjp=True)
-    primal, custom_vjp_matvec_fun = jax.vjp(
-        lambda vec, *params: bidiag(matvec, vec, *params),
-        vec,
-        A,
-    )
-
-    (dvec, rest) = custom_vjp_matvec_fun(cotangent)
+    assert False

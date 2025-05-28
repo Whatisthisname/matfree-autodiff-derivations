@@ -8,7 +8,7 @@ from tests.test_bidiag_JVP_and_VJP_jax import (
     bidiagonalize_vjpable_matvec,
     bidiagonalize_vjpable,
     BidiagOutput,
-    bidiagonalize_primal,
+    bidiagonalize_matvec,
 )
 
 
