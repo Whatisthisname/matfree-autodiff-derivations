@@ -575,8 +575,34 @@ def bidiagonalize_vjpable_matvec(
             sigma = -ls[:, n].T @ u_n - alphas[n] * t
 
             if reorthogonalize:
+                lams_undivided = -u_n - sigma * ls[:, n]
+
+                lambda_n = jax.lax.cond(
+                    pred=jnp.allclose(alphas[n], 0.0),
+                    true_fun=lambda: 0 * lams_undivided,
+                    false_fun=lambda: lams_undivided / alphas[n],
+                )
+
+                jax.debug.print(
+                    "constraint before: \n{}",
+                    ls.T @ u_n
+                    + alphas[n] * ls.T @ lambda_n
+                    + sigma * jnp.eye(len(ls))[n],
+                    ordered=True,
+                )
+
                 lambda_n = (
-                    ls[:, n] * t - (1 / alphas[n]) * (np.eye(k) - ls @ ls.T) @ u_n
+                    lambda_n
+                    - ls @ ls.T @ lambda_n
+                    - (1 / alphas[n]) * ls @ (ls.T @ u_n + sigma * jnp.eye(len(ls))[n])
+                )
+
+                jax.debug.print(
+                    "constraint after : \n{}\n",
+                    ls.T @ u_n
+                    + alphas[n] * ls.T @ lambda_n
+                    + sigma * jnp.eye(len(ls))[n],
+                    ordered=True,
                 )
 
             else:
@@ -586,6 +612,10 @@ def bidiagonalize_vjpable_matvec(
                     pred=jnp.allclose(alphas[n], 0.0),
                     true_fun=lambda: 0 * lams_undivided,
                     false_fun=lambda: lams_undivided / alphas[n],
+                )
+
+                jax.debug.print(
+                    "constraint: \n{}", ls.T @ u_n + alphas[n] * ls.T @ lambda_n
                 )
 
             w = -nabla.betas[n - 1] - ls[:, n - 1].T @ lambda_n
@@ -598,8 +628,6 @@ def bidiagonalize_vjpable_matvec(
                 true_fun=lambda: 0 * undivided_rhos_,
                 false_fun=lambda: undivided_rhos_ / betas[n - 1],
             )
-
-            jax.debug.print("first print", ordered=True)
 
             jax.debug.print(
                 "da[{0}] = {1}",
@@ -1017,8 +1045,8 @@ def bidiag_input(seed):
     )
 
     # Generate random matrix dimensions between 1 and 6
-    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=())
-    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=())
+    n = jax.random.randint(key=width_rng, minval=1, maxval=6, shape=()) + 8
+    m = jax.random.randint(key=height_rng, minval=1, maxval=6, shape=()) + 8
 
     # Generate random matrix A and its tangent d_A
     A = jax.random.normal(key=fill_rng, shape=(n, m))
@@ -1200,7 +1228,7 @@ def test_vjp(bidiag_input, bidiag_cotangent):
     bidiag_func = bidiagonalize_vjpable_matvec(
         int(num_matvecs),
         custom_vjp=True,  # True!
-        reorthogonalize=False,
+        reorthogonalize=True,
     )
     _, custom_vjp_matvec_fun = jax.vjp(
         lambda vec, *params: bidiag_func(matvec, vec, *params),

@@ -193,4 +193,4 @@ Finally, in the same equation, isolate<br> $\kappa = - \nabla r_1 + A^\top \lamb
 
 All unknowns are now determined.
 
-Use $\kappa$ and $\{\rho_i\}_{i=1}^k, \{\lambda_i\}_{i=1}^k$ in equation $[dA]$ and $[d\tilde r]$ to get the gradient of $\mu$ w.r.t. $A$ and $\tilde r$.
+Use $\kappa$ and ${\rho_i}_{i=1}^k, {\lambda_i}_{i=1}^k$ in equation $[dA]$ and $[d\tilde r]$ to get the gradient of $\mu$ w.r.t. $A$ and $\tilde r$.
