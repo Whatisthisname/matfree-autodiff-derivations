@@ -169,7 +169,7 @@ class Mask(MatrixExpr):
             assert_never(sparsity)
 
     def str_compact(self) -> str:
-        if isinstance(self.expr, (_Sum, _Product)):
+        if isinstance(self.expr, (_Sum, _Product, _Transpose)):
             return Mask._get_symbol(self.sparsity) + f"({self.expr.str_compact()})"
         else:
             return Mask._get_symbol(self.sparsity) + f"{self.expr.str_compact()}"
@@ -231,7 +231,7 @@ class _Transpose(MatrixExpr):
         return Shape((self.expr.shape().shape[1], self.expr.shape().shape[0]))
 
     def str_compact(self) -> str:
-        if isinstance(self.expr, (_Sum, _Product)):  # TODO perhaps fix here.
+        if isinstance(self.expr, (_Sum, _Product, Mask)):  # TODO perhaps fix here.
             return f"({self.expr.str_compact()})ᵀ"
         else:
             return f"{self.expr.str_compact()}ᵀ"
@@ -255,9 +255,9 @@ class Inverse(MatrixExpr):
 class _Sum(MatrixExpr):
     def __init__(self, exprs: typing.Sequence[MatrixExpr]):
         assert len(exprs) > 0, "Sum requires at least one term"
-        assert all(
-            term.shape() == exprs[0].shape() for term in exprs
-        ), f"All terms in a sum must have the same shape, got {[term.shape() for term in exprs]}"
+        assert all(term.shape() == exprs[0].shape() for term in exprs), (
+            f"All terms in a sum must have the same shape, got {[term.shape() for term in exprs]}"
+        )
         self.exprs = exprs
 
     def shape(self) -> Shape:
@@ -297,7 +297,9 @@ class _Product(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
         assert (
             left.is_scalar() or right.is_scalar() or left.shape()[1] == right.shape()[0]
-        ), f"Product requires shared inner dimension for both sides, got LHS {left.shape()} and RHS {right.shape()}, with left = {left.str_compact()} and right {right.str_compact()}"
+        ), (
+            f"Product requires shared inner dimension for both sides, got LHS {left.shape()} and RHS {right.shape()}, with left = {left.str_compact()} and right {right.str_compact()}"
+        )
         if right.is_scalar():
             self._shape = left.shape()
         elif left.is_scalar():
@@ -335,9 +337,9 @@ class Norm(MatrixExpr):
 
 class InnerProduct(MatrixExpr):
     def __init__(self, left: MatrixExpr, right: MatrixExpr):
-        assert (
-            left.shape() == right.shape()
-        ), f"Inner product requires same shape for both sides, but got LHS {left.shape()} and RHS {right.shape()} with left = {left.str_compact()} and right = {right.str_compact()}"
+        assert left.shape() == right.shape(), (
+            f"Inner product requires same shape for both sides, but got LHS {left.shape()} and RHS {right.shape()} with left = {left.str_compact()} and right = {right.str_compact()}"
+        )
         self.left = left
         self.right = right
 
@@ -360,9 +362,9 @@ class InnerProduct(MatrixExpr):
 
 class Equation:
     def __init__(self, lhs: MatrixExpr, rhs: MatrixExpr):
-        assert (
-            lhs.shape() == rhs.shape()
-        ), f"Equation requires same shape for both sides, got LHS {lhs.shape()} and RHS {rhs.shape()}"
+        assert lhs.shape() == rhs.shape(), (
+            f"Equation requires same shape for both sides, got LHS {lhs.shape()} and RHS {rhs.shape()}"
+        )
         self.lhs = lhs
         self.rhs = rhs
 
