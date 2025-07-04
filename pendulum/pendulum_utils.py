@@ -24,6 +24,7 @@ def double_pendulum_rhs(state, t, params):
     """
     theta1, omega1, theta2, omega2 = state
     m1, m2, l1, l2, g = params
+    # return jnp.array([omega1, -10 * theta1 - omega1, omega2, -10 * theta2 - omega2])
 
     delta = theta2 - theta1
     den1 = (m1 + m2) * l1 - m2 * l1 * jnp.cos(delta) ** 2
@@ -92,7 +93,7 @@ def create_animation(trajectory, l1=1.0, l2=1.0, duration=10):
         anim: matplotlib.animation.FuncAnimation object
         fig: matplotlib figure object
     """
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(4, 4))
     ax.set_aspect("equal")
     ax.set_xlim(-2.2, 2.2)
     ax.set_ylim(-2.2, 2.2)
@@ -197,7 +198,7 @@ def save_and_display_animation(
 
     # Create animation and save as GIF
     anim, fig = create_animation(trajectory, duration=int(len(trajectory) / fps))
-    anim.save(f"{name}.gif", writer="pillow")
+    anim.save(f"{name}.gif", writer="pillow", dpi=50)
     plt.close(fig)
 
     # Display the saved GIF

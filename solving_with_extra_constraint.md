@@ -1,3 +1,26 @@
+# Vector Constraints:
+Knowns: $A^{m\times n}$, $\tilde{r}^{m\times 1}$
+
+Unknowns: $B^{n\times n}$, $R^{m\times k}$, $L^{n\times k}$, $c^{1\times 1}$, $res^{m\times 1}$
+
+Constraints:
+
+$$
+\begin{align}
+AR &= LB 
+\\
+A^\top L &= B R^\top + e_k res^\top  
+\\
+\text{diag}(L^\top L) &= I
+\\
+\text{diag}(R^\top R) &= I
+\\
+Re_1 &= \tilde{r}c
+\\
+\text{B is} & \text{ upper bidiagonal}
+\end{align}
+$$
+
 # Constraints:
 
 $L(1): l_1 a_1 = Ar_1$
@@ -161,7 +184,7 @@ d\mu &= \langle \nabla c, dc\rangle
 $\begin{array}{ll}
 \text{Adjoint system:} \\
 [dl_1] & \nabla l_n + a_n\lambda_n + b_n\lambda_{n+1} - A\rho_n + l_n\sigma_n + \sum_{m=2}^{k} l_m\gamma_{m,n} = 0 \\
-[dl_n] \text{ (for } n \in \{2...k-1\}\text{)} & \nabla l_n + a_n\lambda_n + b_n\lambda_{n+1} - A\rho_n + l_n\sigma_n + \sum_{m\neq n}^{n-1} l_m\gamma_{n,m} + \sum_{m=n+1}^k l_m\gamma_{m,n} = 0 \\
+[dl_n] \text{ (for } n \in \{2...k-1\}\text{)} & \nabla l_n + a_n\lambda_n + b_n\lambda_{n+1} - A\rho_n + l_n\sigma_n + \sum_{m=1}^{n-1} l_m\gamma_{n,m} + \sum_{m=n+1}^k l_m\gamma_{m,n} = 0 \\
 [dl_k] & \nabla l_k + a_k\lambda_k - A\rho_k + l_k\sigma_k + \sum_{m=1}^{k-1} l_m\gamma_{n,m}= 0 \\
 [dr_1] & \nabla r_1 - A^\top\lambda_1 + a_1\rho_1 + r_1\omega_1 + \kappa = 0 \\
 [dr_n] \text{ (for } n \in \{2...k\}\text{)} & \nabla r_n - A^\top\lambda_n + b_{n-1}\rho_{n-1} + a_n\rho_n + r_n\omega_n = 0 \\

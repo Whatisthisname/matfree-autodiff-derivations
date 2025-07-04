@@ -5,16 +5,22 @@ import optax
 import equinox as eqx
 import koopman_model
 from tests import test_bidiag_JVP_and_VJP_jax as bidiag_module
-from matfree.decomp import bidiag as matfree_bidiag
+from arnoldi_bidiag import arnoldi_bidiag
+# from matfree.decomp import bidiag as matfree_bidiag
 
 
 def bidiagonalize(Phi: ArrayLike, bidiag_func, key):
-    # start_vec = jax.random.normal(key=key, shape=Phi[0, :].shape)
-    start_vec = Phi[0, :]
-    bidiag_output: bidiag_module.BidiagOutput = bidiag_func(start_vec, Phi)
-    B = jnp.diag(bidiag_output.alphas) + jnp.diag(bidiag_output.betas, 1)
-    L = bidiag_output.ls
-    R_T = bidiag_output.rs.T
+    v0 = jax.random.normal(key=key, shape=Phi[0, :].shape)
+    # v0 = Phi[0, :]
+    # bidiag_output: bidiag_module.BidiagOutput = bidiag_func(v0, Phi)
+    # B = jnp.diag(bidiag_output.alphas) + jnp.diag(bidiag_output.betas, 1)
+    # L = bidiag_output.ls
+    # R_T = bidiag_output.rs.T
+
+    output: arnoldi_bidiag.DecompResult = bidiag_func(v0, Phi)
+    B = jnp.diag(output.as_) + jnp.diag(output.bs_, 1)
+    L = output.ls
+    R_T = output.rs.T
 
     # def matvec(v, mat):
     #     return mat @ v
@@ -35,29 +41,37 @@ def compute_loss(model, trajec, bidiag_func, key):
     # Encode trajectory to latent space
     Traj1 = trajec[:-1, :]
     Traj2 = trajec[1:, :]
-    all_encoded = jax.vmap(model.encode)(trajec).T
-    Phi1 = all_encoded[:, :-1]  # shape (k, T-1)
-    Phi2 = all_encoded[:, 1:]  # shape (k, T-1)
+    all_encoded = jax.vmap(model.encode)(trajec)
+    A = all_encoded[:-1, :]  # shape (T-1, k)
+    B = all_encoded[1:, :]  # shape (T-1, k)
+
+    koop = jnp.linalg.lstsq(A, B)[0].T
 
     # Compute bidiagonal decomposition
-    L, B, R_T = bidiagonalize(Phi1, bidiag_func, key)
+    L, Bi, R_T = bidiagonalize(koop, bidiag_func, key)
+    # Minimize squared sum of Bi diagonal
 
-    B_inv = jnp.linalg.pinv(B)
+    extra_loss = jnp.sum((jnp.abs(jnp.diag(Bi)) - 1) ** 2)
 
-    # Compute Koopman matrix: A = Phi_next R B^{-1} L^T
-    A_koop = Phi2 @ R_T.T @ B_inv @ L.T  # (k, k)
+    # Bi_inv = jnp.linalg.inv(Bi)
+
+    # # Compute Koopman matrix: A = Phi_next R B^{-1} L^T
+    # A_koop = B @ R_T.T @ Bi_inv @ L.T  # (k, k)
 
     # Predict one step forward from current encodings
     # phi_t = jax.vmap(model.encode)(x_t)  # (T-1, k)
-    Phi2_hat = A_koop @ Phi1  # (k, T-1)
+    # B_hat = A_koop @ A  # (k, T-1)
+    B_hat = (koop @ A.T).T  # (T-1, k)
+
+    # The koop should have determinant less than one
 
     # jax.debug.print("{}", jnp.mean(Phi2 - Phi2_hat) ** 2)
 
     # Compute MSE loss in physical space with reconstruction error
-    dynamics_loss = jnp.mean((Phi2 - Phi2_hat) ** 2)
-    reconstruct_loss = jnp.mean((jax.vmap(model.decode)(Phi2_hat.T) - Traj2) ** 2)
-    loss = dynamics_loss + reconstruct_loss**2
-    return loss, (A_koop, loss)
+    dynamics_loss = jnp.mean((B - B_hat) ** 2)
+    reconstruct_loss = jnp.mean((jax.vmap(model.decode)(B) - Traj2) ** 2)
+    loss = dynamics_loss + reconstruct_loss + extra_loss
+    return loss, (koop, loss)
 
 
 # Training step
@@ -80,8 +94,11 @@ def train_koopman_model(
     def matvec(v, mat):
         return mat @ v
 
-    baked = bidiag_module.bidiagonalize_vjpable_matvec(
-        num_matvecs=matvecs, custom_vjp=True, reorthogonalize=True
+    baked = arnoldi_bidiag.arnoldi_bidiagonalization(
+        num_matvecs=matvecs,
+        output_size=latent_dim,
+        custom_vjp=True,
+        reortho="full",
     )
 
     def bidiag_func(vec, mat):

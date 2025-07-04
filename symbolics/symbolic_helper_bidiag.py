@@ -65,9 +65,10 @@ constraints = [
     Equation(A.T * L, R * B.T + res * e_k.T),
     Equation(Mask(L.T * L - I_L, Sps.Diag), (L.T * L) * 0),
     Equation(Mask(R.T * R - I_R, Sps.Diag), (R.T * R) * 0),
+    # Equation(Mask(R.T * R - I_R, Sps.Lower), (R.T * R) * 0),
     Equation(R * e_1, r_input * c),
     Equation(Mask(B, Sps.SSUpper) + Mask(B, Sps.SLower), 0 * B),
-    Equation(Mask(L.T * L - I_L, Sps.SLower), (L.T * L) * 0),
+    # Equation(Mask(B, Sps.SSUpper), 0 * B),
 ]
 
 print()

@@ -9,6 +9,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "jax (>=0.5.3,<0.6.0)",
+    "plotly",
     "typing-extensions (>=4.13.2,<5.0.0)",
 ]
 
