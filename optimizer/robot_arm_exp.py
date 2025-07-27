@@ -6,7 +6,7 @@ import os
 import optax
 
 # degrees of freedom in robot arm
-ROBOT_ARM_DOF = 5
+ROBOT_ARM_DOF = 2
 
 N_BUMPS_IN_LOSS = 2 * 40
 
@@ -86,9 +86,9 @@ def robot_arm_position(angles, lengths):
 @jax.jit
 def configuration_penalty(angles, lengths):
     jac = jax.jacrev(robot_arm_position, argnums=0)(angles, lengths)
-    return -jnp.log(
-        jnp.linalg.det(jac.T @ jac + jnp.eye(len(angles)) * 0.01)
-    )  # 0.0 because unnecessary
+    # return -jnp.log(jnp.linalg.det(jac.T @ jac + jnp.eye(len(angles)) * 0.00))
+    # return -jnp.linalg.slogdet((jac.T @ jac + jnp.eye(len(angles)) * 0.00)).logabsdet
+    return -jnp.linalg.slogdet((jac @ jac.T + jnp.eye(2) * 0.01)).logabsdet
 
 
 @jax.jit
@@ -100,22 +100,22 @@ def configuration_penalty_hessian(angles, lengths):
     )
 
 
+def lengths(ROBOT_ARM_DOF: int):
+    return jnp.array([1.0] * ROBOT_ARM_DOF) * (1.4 / ROBOT_ARM_DOF)
+
+
 @jax.jit
 def angle_loss(angles, loss_param):
-    location = robot_arm_position(angles=angles, lengths=LENGTHS)
+    location = robot_arm_position(angles=angles, lengths=lengths(len(angles)))
     # return jnp.linalg.norm(angles), location
-    end_effector_loss = loss_func(location)
-    configuration_loss = configuration_penalty(angles, LENGTHS)
+    end_effector_loss = 1.0 * loss_func(location)
+    configuration_loss = configuration_penalty(angles, lengths(len(angles)))
 
     return end_effector_loss + loss_param * configuration_loss, location
-    # return end_effector_loss, location
 
 
-LENGTHS = jnp.array([1.0] * ROBOT_ARM_DOF) * (1.4 / ROBOT_ARM_DOF)
-
-
-@partial(jax.jit, static_argnames=["steps"])
-def train_model(key, steps: int, loss_param):
+@partial(jax.jit, static_argnames=["steps", "ROBOT_ARM_DOF"])
+def train_model(key, steps: int, loss_param, ROBOT_ARM_DOF: int):
     # Angles are the parameters
     angles_init = jnp.array([jnp.pi / 2] * ROBOT_ARM_DOF) + 0.3 * jax.random.uniform(
         key=key, shape=ROBOT_ARM_DOF, minval=-1, maxval=1
@@ -123,8 +123,8 @@ def train_model(key, steps: int, loss_param):
 
     # Create optimizer with gradient clipping
     optimizer = optax.chain(
-        optax.clip_by_global_norm(10.0),  # Clip gradients at norm 1.0
-        optax.adam(learning_rate=0.1),
+        # optax.clip_by_global_norm(10.0),  # Clip gradients at norm 1.0
+        optax.adam(learning_rate=0.01),
     )
     opt_state_init = optimizer.init(angles_init)
 
@@ -140,16 +140,16 @@ def train_model(key, steps: int, loss_param):
         return (new_angles, new_opt_state), location
 
     init_carry = (angles_init, opt_state_init)
-    init_location = robot_arm_position(angles_init, LENGTHS)
+    init_location = robot_arm_position(angles_init, lengths(ROBOT_ARM_DOF))
 
     (final_angles, final_opt_state), locations = jax.lax.scan(
         scan_body, init_carry, None, length=steps
     )
 
-    return jnp.vstack([init_location[None, :], locations])
+    return jnp.vstack([init_location[None, :], locations]), final_angles
 
 
-def plot_loss():
+def plot_loss_output_position_space():
     # Reduce resolution for faster plotting
     x = jnp.linspace(-1.5, 1.5, 50)
     y = jnp.linspace(-1.5, 1.5, 50)
@@ -284,5 +284,117 @@ def plot_loss():
     print("Open this file in your web browser to view the interactive 3D surface.")
 
 
+def plot_loss_angle_space():
+    assert ROBOT_ARM_DOF == 2, "robot arm DDOF has to be 2 for plotting"
+    # Reduce resolution for faster plotting
+    x = jnp.linspace(-jnp.pi, jnp.pi, 50)
+    y = jnp.linspace(-jnp.pi, jnp.pi, 50)
+    X, Y = jnp.meshgrid(x, y)
+
+    # Vectorize the evaluation by reshaping the grid points
+    points = jnp.stack([X.flatten(), Y.flatten()], axis=1)
+
+    # Create multiple surfaces for different lambda values
+    lambda_values = jnp.linspace(0, 10, 20)  # 20 different lambda values from 0 to 100
+
+    fig_data = []
+
+    # Generate surfaces for all lambda values
+    for i, lambda_param in enumerate(lambda_values):
+        # Use vmap to vectorize the loss function over all points
+        vectorized_loss = jax.vmap(lambda angles: angle_loss(angles, lambda_param)[0])
+        Z = vectorized_loss(points).reshape(X.shape)
+
+        # Only show the first surface initially (lambda = 0)
+        visible = i == 0
+
+        fig_data.append(
+            go.Surface(
+                z=Z,
+                x=X,
+                y=Y,
+                surfacecolor=Z,
+                colorscale="viridis",
+                showscale=False,
+                visible=visible,
+                name=f"λ={lambda_param:.1f}",
+            )
+        )
+
+    fig = go.Figure(data=fig_data)
+
+    # Create slider steps for lambda parameter
+    slider_steps = []
+    for i, lambda_param in enumerate(lambda_values):
+        # Create visibility array - only show the current surface
+        visibility_updates = [False] * len(lambda_values)
+        visibility_updates[i] = True
+
+        step = dict(
+            method="restyle",
+            args=[
+                {
+                    "visible": visibility_updates,
+                },
+                list(range(len(lambda_values))),  # All surfaces
+            ],
+            label=f"λ={lambda_param:.1f}",
+        )
+        slider_steps.append(step)
+
+    fig.update_layout(
+        title="Interactive Loss Landscape with Lambda Parameter Slider",
+        scene=dict(
+            xaxis_title="angle1",
+            yaxis_title="angle2",
+            zaxis_title="loss",
+            xaxis=dict(range=[-jnp.pi, jnp.pi], autorange=False),
+            yaxis=dict(range=[-jnp.pi, jnp.pi], autorange=False),
+            zaxis=dict(
+                range=[0, 30.0], autorange=False
+            ),  # Fixed range for better comparison
+        ),
+        scene_aspectmode="cube",
+        sliders=[
+            dict(
+                active=0,  # Start with lambda = 0
+                currentvalue={"prefix": "λ = "},
+                pad={"t": 50},
+                steps=slider_steps,
+            )
+        ],
+    )
+
+    fig.update_coloraxes(showscale=False)
+
+    # Save to HTML file
+    output_file = "interactive_surface.html"
+    fig.write_html(output_file)
+    print(f"Interactive plot saved to: {os.path.abspath(output_file)}")
+    print("Open this file in your web browser to view the interactive 3D surface.")
+    print(
+        "Use the slider to change the lambda parameter and see how it affects the loss landscape."
+    )
+
+
+def plot_configuration_loss_minima():
+    from robot_arm_clustered_states import plot_robot_arm
+    from matplotlib import pyplot as plt
+    import numpy as np
+
+    n_runs = 5
+    fig, axs = plt.subplots(1, n_runs)
+    for i, ax in enumerate(axs):
+        _, final_angles = train_model(
+            key=jax.random.PRNGKey(i), steps=5000, loss_param=1.0, ROBOT_ARM_DOF=5
+        )
+
+        plot_robot_arm(ax, final_angles - final_angles[:1], f"C{i}")
+        ax.set_aspect("equal")
+
+    plt.show()
+
+
 if __name__ == "__main__":
-    plot_loss()
+    # plot_loss()
+    plot_loss_angle_space()

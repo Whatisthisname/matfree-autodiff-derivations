@@ -4,7 +4,7 @@ from jax.typing import ArrayLike
 import optax
 import equinox as eqx
 import koopman_model
-from tests import test_bidiag_JVP_and_VJP_jax as bidiag_module
+from tests import test_bidiag_JVP_VJP as bidiag_module
 from arnoldi_bidiag import arnoldi_bidiag
 # from matfree.decomp import bidiag as matfree_bidiag
 

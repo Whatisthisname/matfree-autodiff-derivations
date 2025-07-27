@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-from tests.test_bidiag_JVP_and_VJP_jax import (
+from tests.test_bidiag_JVP_VJP import (
     bidiagonalize_vjpable_matvec,
     bidiagonalize_vjpable,
     BidiagOutput,
