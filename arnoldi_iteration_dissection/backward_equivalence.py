@@ -6,6 +6,8 @@ from matfree import decomp
 import os
 import sys
 
+jnp.printoptions(precision=2)
+
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from bidiag import bidiagonalize, BidiagOutput
 
@@ -13,7 +15,7 @@ from bidiag import bidiagonalize, BidiagOutput
 n = 4
 m = 2
 
-matvecs = 2
+matvecs = 1
 
 A = jax.random.normal(key=jax.random.PRNGKey(0), shape=(n, m))
 
@@ -78,38 +80,35 @@ def bidiag_materialized_loss(result: BidiagOutput):
 
 
 print()
-print("Arnoldi gradient:")
+print("Arnoldi VJP:")
 
 arnoldi_loss_val, arnoldi_grad = jax.value_and_grad(padded_arnoldi_loss)(arnoldi_result)
 
 _, vjpfun = jax.vjp(lambda v, A: arnoldi_func(matvec_sym, (n, m), v, A), v_aug, A)
 (v_aug_grad, A_aug_grad) = vjpfun(arnoldi_grad)
 
-print("v_aug_grad grad")
-print(v_aug_grad)
-print("A_aug grad")
-print(A_aug_grad)
+# print("v_aug_grad grad")
+# print(v_aug_grad)
+# print("Arnoldi A_aug grad")
+# print(A_aug_grad)
 
-print()
-print("Bidiag gradient:")
+print("Bidiag VJP:")
 bidiag_loss_val, bidiag_grad = jax.value_and_grad(bidiag_materialized_loss)(bd_result)
-
-# print(jax.tree.map(lambda leaf: leaf, bidiag_grad))
 
 _, vjpfun = jax.vjp(lambda v, A: bd(matvec, v, A), v, A)
 v_grad, A_grad = vjpfun(bidiag_grad)
 
-print("v grad")
-print(v_grad)
-print("A grad")
+# print("v grad")
+# print(v_grad)
+print("Bidiag A grad")
 print(A_grad)
 
-print(
-    "bidiag loss value and arnoldi loss value:",
-    bidiag_loss_val,
-    arnoldi_loss_val,
-    sep="\n",
-)
+# print(
+#     "bidiag loss value and arnoldi loss value:",
+#     bidiag_loss_val,
+#     arnoldi_loss_val,
+#     sep="\n",
+# )
 
 stuff1 = extract_bidiag_results(bd_result)
 stuff2 = extract_arnoldi_results(arnoldi_result)
@@ -126,7 +125,7 @@ jax.tree.map(compare, stuff1, stuff2, names)
 
 
 def measure(leaf1, leaf2, name):
-    return jnp.linalg.norm(leaf1 - leaf2)
+    return jnp.linalg.norm(leaf1 - leaf2).item()
 
 
-print(jax.tree.map(measure, stuff1, stuff2, names))
+print("errors:\n", jax.tree.map(measure, stuff1, stuff2, names))

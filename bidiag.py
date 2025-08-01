@@ -441,12 +441,20 @@ def bidiagonalize(
 
         # jax.debug.print("rs\n{}", rs)
         # jax.debug.print("ls\n{}", ls)
-        jax.debug.print(
-            "bdval {}",
+        # jax.debug.print(  #! LAMBDA _ K
+        #     "bdval {}",
+        #     nabla.res
+        #     + rs[:, num_matvecs - 1] * nabla.alphas[num_matvecs - 1]
+        #     - rs @ rs.T @ nabla.res,
+        # )
+        other_lambda_K = (
             nabla.res
             + rs[:, num_matvecs - 1] * nabla.alphas[num_matvecs - 1]
-            - rs @ rs.T @ nabla.res,
+            - rs @ rs.T @ nabla.res
         )
+
+        other_Lambda = jnp.zeros((m, num_matvecs))
+        other_Lambda = other_Lambda.at[:, num_matvecs - 1].set(other_lambda_K)
 
         k = num_matvecs
 
@@ -458,8 +466,11 @@ def bidiagonalize(
                 ("param_incremental_grads", ArrayLike),
                 ("Lambda", ArrayLike),
                 ("Rho", ArrayLike),
+                ("other_Lambda", ArrayLike),
             ],
         )
+
+        # jax.debug.print("L grad: \n{}", nabla.ls)
 
         def rewritten_gradable_fn(params, lam, r, l, rho):
             return -lam @ matvec(r, *params) - l @ matvec(rho, *params)
@@ -523,6 +534,20 @@ def bidiagonalize(
             v = nabla.rs[:, n] - vecmat(lambda_n) + alphas[n] * rho_n
             omega = -rs[:, n].T @ v - betas[n - 1] * w
             undivided_rhos_ = -v - omega * rs[:, n]
+
+            def test(i):
+                lambda_k = carry.other_Lambda[:, num_matvecs - 1]
+                # jax.debug.print("lambda_k:{}", lambda_k)
+                # jax.debug.print(
+                #     "!!! BIDIAG VecmatLambda: \n{}", matvec(lambda_k, *matvec_params)
+                # )
+
+            jax.lax.cond(
+                i_in == 0,
+                true_fun=test,
+                false_fun=lambda *p: None,
+                operand=i_in,
+            )
 
             rho_n_minus_one = jax.lax.cond(
                 pred=jnp.allclose(betas[n - 1], 0.0),
@@ -594,6 +619,7 @@ def bidiagonalize(
                 ),
                 Lambda=Lambda,
                 Rho=Rho,
+                other_Lambda=carry.other_Lambda,
             )
 
         # initialize param_grads to 0
@@ -609,6 +635,7 @@ def bidiagonalize(
                     param_incremental_grads=init_param_grads,
                     Lambda=jnp.zeros((n, k)),
                     Rho=jnp.zeros((m, k)).at[:, k - 1].set(-nabla.res),
+                    other_Lambda=other_Lambda,
                 ),
             )
         else:
@@ -618,6 +645,7 @@ def bidiagonalize(
                 param_incremental_grads=init_param_grads,
                 Lambda=jnp.zeros((n, k)),
                 Rho=jnp.zeros((m, k)).at[:, k - 1].set(-nabla.res),
+                other_Lambda=other_Lambda,
             )
 
         # last iteration steps:
@@ -647,8 +675,8 @@ def bidiagonalize(
         ltl = ls.T @ Lambda
         rtr = rs.T @ output.Rho
 
-        # jax.debug.print("Lambda: \n{}", Lambda.round(3))
-        # jax.debug.print("Rho   : \n{}", output.Rho.round(3))
+        jax.debug.print("Lambda: \n{}", Lambda)
+        jax.debug.print("Rho   : \n{}", output.Rho)
 
         v = nabla.rs[:, 0] - vecmat(lambda_1) + alphas[0] * output.rho_n
 
@@ -668,10 +696,17 @@ def bidiagonalize(
             )(ls.T, output.Rho.T),
             axis=0,
         )
-        # jax.debug.print("Partial R grad: \n{}", R_grad.round(3))
-        # jax.debug.print("Partial L grad: \n{}", L_grad.round(3))
+
+        jax.debug.print(
+            "Heyyy,, \n{}",
+            -jnp.outer(ls[:, 0], output.Rho[:, 0]) - jnp.outer(Lambda[:, 0], rs[:, 0]),
+        )
+
+        jax.debug.print("ls: \n{}", ls)
+        jax.debug.print("rs: \n{}", rs)
+        jax.debug.print("Partial R grad: \n{}", R_grad)
+        jax.debug.print("Partial L grad: \n{}", L_grad)
         # A_grad = R_grad + L_grad
-        # jax.debug.print("A grad: \n{}", A_grad.round(3))
 
         # jax.debug.print("KKK: {}", jnp.outer(Lambda.T[0], rs.T[0]))
 

@@ -248,10 +248,6 @@ def _hessenberg_adjoint(
     e_1, e_K = jnp.eye(num_matvecs)[[0, -1], :]
     lower_mask = lower(jnp.ones((num_matvecs, num_matvecs)))
 
-    lrlrlr = Q
-    ls = Q[:m, 1::2]
-    jax.debug.print("ls")
-
     # Initialise
     eta = dH @ e_K - Q.T @ dres
     lambda_k = dres + Q @ eta
@@ -261,7 +257,7 @@ def _hessenberg_adjoint(
     # jax.debug.print("last H \n{}", dH @ e_K)
     # jax.debug.print("Q @ last H \n{}", Q @ dH @ e_K)
     # jax.debug.print("lamk \n{}", Q @ Q.T @ dres)
-    jax.debug.print("lamk \n{}", lambda_k)
+    # jax.debug.print("lamk \n{}", lambda_k)
 
     # Prepare more  auxiliary matrices
     Pi_xi = dQ.T + jnp.linalg.outer(eta, r)
@@ -283,7 +279,7 @@ def _hessenberg_adjoint(
         "lower_mask": lower_mask,
         "Pi_gamma": Pi_gamma,
         "Pi_xi": Pi_xi,
-        "dH_T_k": dH.T,
+        "dH_k": dH.T,
         "reortho_mask_k": reortho_mask,
         "q": Q.T,
     }
@@ -299,11 +295,20 @@ def _hessenberg_adjoint(
     init = (lambda_k, Lambda, Gamma, dp)
     result, _ = jax.lax.scan(adjoint_step, init, xs=scan_over, reverse=True)
     (lambda_k, Lambda, Gamma, dp) = result
-    jax.debug.print("Q = \n{}", Q)
-    # jax.debug.print("Lambda = \n{}", Lambda.T.round(3))
-    # # jax.debug.print("L Q.T = \n{}", (Lambda @ Q.T).round(5))
-    # jax.debug.print("QT L = \n{}", (Q.T @ Lambda))
-    # jax.debug.print("dH   = \n{}", dH)
+
+    jax.debug.print("Q.T:{}", Q.T)
+    jax.debug.print("Lambda\n{}", Lambda)
+
+    r1 = Q[4:, 0]
+    l1 = Q[:4, 1]
+    up_1 = Lambda[:4, 0]
+    down_1 = Lambda[4:, 1]
+    jax.debug.print("final_grad\n{}", jnp.outer(up_1, r1) + jnp.outer(l1, down_1))
+    jax.debug.print("l_1\n{}", l1)
+
+    jax.debug.print("final A augmented Grad:\n{}", Lambda @ Q.T)
+    jax.debug.print("final A Grad:\n{}", Lambda @ Q.T + Q @ Lambda.T)
+    # jax.debug.print("dQ:\n{}", dQ)
 
     # Solve for the input gradient
     dv = lambda_k * c
@@ -333,7 +338,7 @@ def _hessenberg_adjoint_step(
     Pi_xi,
     q,
     # Loop over: reorthogonalisation
-    dH_T_k,
+    dH_k,
     reortho_mask_k,
     # Other parameters
     Q,
@@ -343,21 +348,41 @@ def _hessenberg_adjoint_step(
     if reortho == "full":
         # Get rid of the (I_ll o Sigma) term by multiplying with a mask
         Q_masked = reortho_mask_k[None, :] * Q
-        rhs_masked = reortho_mask_k * dH_T_k
+        rhs_masked = reortho_mask_k * dH_k
+        # jax.debug.print("rhs, masked\n{}", rhs_masked)
 
         # Project x to Q^T x = y via
         # x = x - Q Q^\top x + Q Q^\top x = x - Q Q^\top x + Q y
-        # (here, x = lambda_k and y = dH_T_k)
+        # (here, x = lambda_k and y = dH_k)
         lambda_k = lambda_k - Q_masked @ (Q_masked.T @ lambda_k) + Q_masked @ rhs_masked
+        # jax.debug.print(" Q_masked @ rhs_masked: \n{}", Q_masked @ rhs_masked)
 
     # Transposed matvec and parameter-gradient in a single matvec
     _, vjp = jax.vjp(lambda u, v: matvec(u, *v), q, params)
     vecmat_lambda, dp_increment = vjp(lambda_k)
+
+    # jax.debug.print("idx: {}", idx, ordered=True)
+
     dp = jax.tree.map(lambda g, h: g + h, dp, dp_increment)
 
     # Solve for (Gamma + Gamma.T) e_K
     tmp = lower_mask * (Pi_gamma - vecmat_lambda @ Q)
     Gamma = Gamma.at[idx, :].set(tmp)
+
+    def test(i):
+        pass
+        # jax.debug.print("!!!Vecmat_Lambda: \n{}", vecmat_lambda)
+        # jax.debug.print("Gamma:{}", Gamma)
+        # jax.debug.print("Q:\n{}", Q)
+        # jax.debug.print("Q @ Q.T:\n{}", Q @ Q.T)
+        # ok = Q.T @ d_Q
+
+    jax.lax.cond(
+        idx == 0,
+        true_fun=test,
+        false_fun=lambda *p: None,
+        operand=idx,
+    )
 
     # Solve for the next lambda (backward substitution step)
     Lambda = Lambda.at[:, idx].set(lambda_k)
